@@ -58,6 +58,33 @@ class TimeCampAPI:
         
         return users
 
+    def get_time_entries(self, from_date: str, to_date: str, user_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+        """Get time entries for specified date range.
+        
+        Args:
+            from_date: Start date in YYYY-MM-DD format
+            to_date: End date in YYYY-MM-DD format
+            user_ids: Optional list of user IDs to filter by
+
+        Returns:
+            List of time entry dictionaries
+        """
+        params = {
+            "from": from_date,
+            "to": to_date,
+            "format": "json"
+        }
+        
+        if user_ids:
+            params["user_ids"] = ",".join(map(str, user_ids))
+        
+        logger.debug(f"Fetching time entries from {from_date} to {to_date}")
+        response = self._make_request('GET', "entries", params=params)
+        entries = response.json()
+        
+        logger.debug(f"Retrieved {len(entries)} time entries")
+        return entries
+
     def get_groups(self) -> List[Dict[str, Any]]:
         return self._make_request('GET', "group").json()
 
