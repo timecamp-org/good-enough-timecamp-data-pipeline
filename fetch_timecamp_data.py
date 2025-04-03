@@ -48,9 +48,16 @@ def fetch_time_entries(api, from_date, to_date, logger):
     to_date_parsed = parse_date(to_date)
     
     logger.info(f"Fetching TimeCamp time entries from {from_date_parsed} to {to_date_parsed}")
+    logger.info("Including project data, rates, and additional fields (tags, breadcrumps) by default")
     
-    # Fetch time entries from the API
-    entries = api.get_time_entries(from_date_parsed, to_date_parsed)
+    # Fetch time entries from the API with all additional information included
+    entries = api.get_time_entries(
+        from_date_parsed, 
+        to_date_parsed, 
+        include_project=True,
+        include_rates=True,
+        opt_fields="tags,breadcrumps"
+    )
     
     logger.info(f"Retrieved {len(entries)} time entries")
     return entries
@@ -87,8 +94,13 @@ def main():
     logger, api = setup_environment(args.debug)
     
     try:
-        # Fetch time entries
-        entries = fetch_time_entries(api, args.from_date, args.to_date, logger)
+        # Fetch time entries with additional parameters
+        entries = fetch_time_entries(
+            api, 
+            args.from_date, 
+            args.to_date,
+            logger
+        )
         
         # Generate default output filename if not specified
         if args.output is None:

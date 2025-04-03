@@ -48,31 +48,35 @@ The TimeCamp data is stored in BigQuery with the following schema:
 
 | Column Name | Data Type | Description |
 |-------------|-----------|-------------|
-| id | INTEGER | Primary key, used for upsert matching |
+| id | INTEGER | Unique identifier for the time entry |
 | duration | STRING | Duration of the time entry in seconds |
-| user_id | STRING | ID of the user who logged the time |
-| user_name | STRING | Name of the user who logged the time |
-| task_id | STRING | ID of the task the time was logged against |
-| task_note | STRING | Notes attached to the task |
-| last_modify | STRING | Timestamp of when the entry was last modified |
-| date | DATE | Date of the time entry |
+| user_id | STRING | Identifier of the user who created the entry |
+| user_name | STRING | Name of the user who created the entry |
+| task_id | STRING | Identifier of the task associated with the entry |
+| task_note | STRING | Notes added to the task |
+| last_modify | STRING | Timestamp of the last modification |
+| date | DATE | Date when the time was recorded |
 | start_time | STRING | Start time of the entry (HH:MM:SS) |
 | end_time | STRING | End time of the entry (HH:MM:SS) |
-| locked | STRING | Whether the time entry is locked (0/1) |
+| locked | STRING | Whether the entry is locked for editing |
 | name | STRING | Name of the task |
-| addons_external_id | STRING | External ID for integrations |
-| billable | INTEGER | Whether the time entry is billable (0/1) |
-| invoiceId | STRING | ID of associated invoice |
-| color | STRING | Color code for the task |
+| addons_external_id | STRING | External identifier for integrations |
+| billable | INTEGER | Whether the entry is billable (1) or not (0) |
+| invoiceId | STRING | Invoice identifier if the entry has been invoiced |
+| color | STRING | Color code associated with the task |
 | description | STRING | Description of the time entry |
-| hasEntryLocationHistory | BOOLEAN | Whether location history exists |
+| hasEntryLocationHistory | BOOLEAN | Whether location data was tracked |
+| project_id | INTEGER | Identifier of the project (when include_project=true) |
+| project_name | STRING | Name of the project (when include_project=true) |
+| total_cost | FLOAT | Total cost of the time entry (when include_rates=true) |
+| total_income | FLOAT | Total income of the time entry (when include_rates=true) |
+| rate_income | FLOAT | Income rate of the time entry (when include_rates=true) |
+| tags | STRING | JSON string containing tag information for the time entry |
+| breadcrumps | STRING | Path information showing hierarchy (when opt_fields includes breadcrumps) |
 
-During the upsert operation:
-- Existing entries are identified by matching the `id` field
-- If a match is found, all fields are updated with the latest values
-- If no match is found, a new record is inserted with all fields
-
-This ensures your BigQuery table always contains the most up-to-date time entry data from TimeCamp.
+This schema supports the upsert pattern described in the previous section. When new data is loaded, it will:
+1. Update all fields for any existing record with the same ID
+2. Insert new records for any IDs that don't already exist in the table
 
 ## Usage
 
@@ -95,6 +99,8 @@ python fetch_timecamp_data.py --debug
 # Specify output file
 python fetch_timecamp_data.py --output custom_filename.jsonl
 ```
+
+Note: Project data, rates, and additional fields (tags, breadcrumps) are now always included by default in every API request. This ensures comprehensive data collection without requiring additional parameters.
 
 ### Uploading to BigQuery
 

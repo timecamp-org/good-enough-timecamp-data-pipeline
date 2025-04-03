@@ -58,13 +58,18 @@ class TimeCampAPI:
         
         return users
 
-    def get_time_entries(self, from_date: str, to_date: str, user_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+    def get_time_entries(self, from_date: str, to_date: str, user_ids: Optional[List[int]] = None, 
+                      include_project: bool = True, include_rates: bool = True,
+                      opt_fields: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get time entries for specified date range.
         
         Args:
             from_date: Start date in YYYY-MM-DD format
             to_date: End date in YYYY-MM-DD format
             user_ids: Optional list of user IDs to filter by
+            include_project: Whether to include project data in the response
+            include_rates: Whether to include rate information in the response
+            opt_fields: Optional comma-separated list of additional fields to include (e.g. "tags,breadcrumbs")
 
         Returns:
             List of time entry dictionaries
@@ -72,13 +77,18 @@ class TimeCampAPI:
         params = {
             "from": from_date,
             "to": to_date,
-            "format": "json"
+            "format": "json",
+            "include_project": "1" if include_project else "0",
+            "include_rates": "1" if include_rates else "0"
         }
         
         if user_ids:
             params["user_ids"] = ",".join(map(str, user_ids))
+            
+        if opt_fields:
+            params["opt_fields"] = opt_fields
         
-        logger.debug(f"Fetching time entries from {from_date} to {to_date}")
+        logger.debug(f"Fetching time entries from {from_date} to {to_date} with params: {params}")
         response = self._make_request('GET', "entries", params=params)
         entries = response.json()
         
