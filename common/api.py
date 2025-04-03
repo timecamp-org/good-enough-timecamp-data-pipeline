@@ -143,6 +143,16 @@ class TimeCampAPI:
         
         return user_roles
 
+    def get_user_details(self) -> Dict[str, Any]:
+        """
+        Get detailed information about all users in the system, including their groups.
+        
+        Returns:
+            Dict containing user details and group structure with all hierarchy levels
+        """
+        response = self._make_request('GET', "people_picker")
+        return response.json()
+
     def get_user_settings(self, user_ids: List[int], setting_name: str, batch_size: int = 50) -> Dict[int, Optional[str]]:
         """Get specific user settings for multiple users in bulk."""
         result = {}

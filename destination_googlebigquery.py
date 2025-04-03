@@ -67,23 +67,13 @@ def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_fil
     
     # Check if table exists
     table_exists = False
+    existing_table = None
     try:
-        client.get_table(table_ref)
+        existing_table = client.get_table(table_ref)
         logger.info(f"Table exists: {table_ref}")
         table_exists = True
     except Exception:
         logger.info(f"Table does not exist: {table_ref}")
-    
-    # Always drop and recreate the table to ensure schema is correct
-    if table_exists:
-        logger.info(f"Dropping existing table to update schema: {table_ref}")
-        try:
-            client.delete_table(table_ref)
-            logger.info(f"Table dropped: {table_ref}")
-            table_exists = False
-        except Exception as e:
-            logger.error(f"Error dropping table: {str(e)}")
-            raise
     
     # Define schema based on TimeCamp time entries format
     # Including fields for project data, rates, tags, and breadcrumbs
@@ -117,22 +107,57 @@ def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_fil
         bigquery.SchemaField("total_income", "FLOAT"),
         bigquery.SchemaField("rate_income", "FLOAT"),
         
-        # Tags information (as JSON string)
-        bigquery.SchemaField("tags", "STRING"),
+        # Tags information (as JSON)
+        bigquery.SchemaField("tags", "JSON"),
         
         # Path information
         bigquery.SchemaField("breadcrumps", "STRING"),
+        
+        # User info columns
+        bigquery.SchemaField("email", "STRING"),
+        bigquery.SchemaField("group_name", "STRING"),
+        bigquery.SchemaField("group_breadcrumb_level_1", "STRING"),
+        bigquery.SchemaField("group_breadcrumb_level_2", "STRING"),
+        bigquery.SchemaField("group_breadcrumb_level_3", "STRING"),
+        bigquery.SchemaField("group_breadcrumb_level_4", "STRING"),
     ]
     
-    # Create the table
-    logger.info(f"Creating table: {table_ref}")
-    table = bigquery.Table(table_ref, schema=schema)
-    try:
-        client.create_table(table)
-        logger.info(f"Table created: {table_ref}")
-    except Exception as e:
-        logger.error(f"Error creating table: {str(e)}")
-        raise
+    # Check if we need to update the schema
+    schema_needs_update = False
+    if table_exists:
+        # Compare existing schema with new schema
+        existing_fields = {field.name: field.field_type for field in existing_table.schema}
+        new_fields = {field.name: field.field_type for field in schema}
+        
+        # Check if new fields are added or field types changed
+        for name, field_type in new_fields.items():
+            if name not in existing_fields or existing_fields[name] != field_type:
+                schema_needs_update = True
+                logger.info(f"Schema change detected: field '{name}' needs update")
+                break
+        
+        if schema_needs_update:
+            logger.info(f"Dropping existing table to update schema: {table_ref}")
+            try:
+                client.delete_table(table_ref)
+                logger.info(f"Table dropped: {table_ref}")
+                table_exists = False
+            except Exception as e:
+                logger.error(f"Error dropping table: {str(e)}")
+                raise
+        else:
+            logger.info(f"Existing schema matches the required schema, keeping table: {table_ref}")
+    
+    # Create the table if it doesn't exist
+    if not table_exists:
+        logger.info(f"Creating table: {table_ref}")
+        table = bigquery.Table(table_ref, schema=schema)
+        try:
+            client.create_table(table)
+            logger.info(f"Table created: {table_ref}")
+        except Exception as e:
+            logger.error(f"Error creating table: {str(e)}")
+            raise
     
     # Create a temporary table for the upsert
     temp_table_id = f"temp_{table_id}_{int(time.time())}"
@@ -141,9 +166,11 @@ def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_fil
     
     # Configure job for loading data
     job_config = bigquery.LoadJobConfig(
-        autodetect=True,
+        autodetect=False,  # Disable autodetect to use our explicit schema
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        # Use schema to ensure JSON fields are correctly handled
+        schema=schema
     )
     
     try:
@@ -217,15 +244,23 @@ def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_fil
             T.total_cost = CAST(S.total_cost AS FLOAT64),
             T.total_income = CAST(S.total_income AS FLOAT64),
             T.rate_income = CAST(S.rate_income AS FLOAT64),
-            T.tags = TO_JSON_STRING(S.tags),
-            T.breadcrumps = CAST(S.breadcrumps AS STRING)
+            T.tags = S.tags,
+            T.breadcrumps = CAST(S.breadcrumps AS STRING),
+            T.email = CAST(S.email AS STRING),
+            T.group_name = CAST(S.group_name AS STRING),
+            T.group_breadcrumb_level_1 = CAST(S.group_breadcrumb_level_1 AS STRING),
+            T.group_breadcrumb_level_2 = CAST(S.group_breadcrumb_level_2 AS STRING),
+            T.group_breadcrumb_level_3 = CAST(S.group_breadcrumb_level_3 AS STRING),
+            T.group_breadcrumb_level_4 = CAST(S.group_breadcrumb_level_4 AS STRING)
         WHEN NOT MATCHED THEN
           INSERT (
             id, duration, user_id, user_name, task_id, task_note,
             last_modify, date, start_time, end_time, locked, name,
             addons_external_id, billable, invoiceId, color, description,
             hasEntryLocationHistory, project_id, project_name, total_cost,
-            total_income, rate_income, tags, breadcrumps
+            total_income, rate_income, tags, breadcrumps, email, group_name,
+            group_breadcrumb_level_1, group_breadcrumb_level_2, group_breadcrumb_level_3,
+            group_breadcrumb_level_4
           )
           VALUES (
             CAST(S.id AS INTEGER),
@@ -251,8 +286,14 @@ def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_fil
             CAST(S.total_cost AS FLOAT64),
             CAST(S.total_income AS FLOAT64),
             CAST(S.rate_income AS FLOAT64),
-            TO_JSON_STRING(S.tags),
-            CAST(S.breadcrumps AS STRING)
+            S.tags,
+            CAST(S.breadcrumps AS STRING),
+            CAST(S.email AS STRING),
+            CAST(S.group_name AS STRING),
+            CAST(S.group_breadcrumb_level_1 AS STRING),
+            CAST(S.group_breadcrumb_level_2 AS STRING),
+            CAST(S.group_breadcrumb_level_3 AS STRING),
+            CAST(S.group_breadcrumb_level_4 AS STRING)
           )
         """
         
