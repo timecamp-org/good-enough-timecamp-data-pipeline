@@ -8,3 +8,6 @@ venv/
 users.json
 logs/
 timecamp_data.json
+.temp*
+*-*-*.json
+timecamp_data.jsonl

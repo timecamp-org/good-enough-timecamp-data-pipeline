@@ -19,7 +19,9 @@ def parse_arguments():
     parser.add_argument("--to", dest="to_date", default="yesterday",
                       help="End date (YYYY-MM-DD format or 'yesterday'). Default: yesterday")
     parser.add_argument("--output", default=None,
-                      help="Output file path. Default: timecamp_data.json")
+                      help="Output file path. Default: timecamp_data.jsonl")
+    parser.add_argument("--format", choices=["json", "jsonl"], default="jsonl",
+                      help="Output format: json (pretty) or jsonl (newline-delimited). Default: jsonl")
     parser.add_argument("--debug", action="store_true",
                       help="Enable debug logging")
     
@@ -53,15 +55,28 @@ def fetch_time_entries(api, from_date, to_date, logger):
     logger.info(f"Retrieved {len(entries)} time entries")
     return entries
 
-def save_to_json(entries, output_path, logger):
-    """Save time entries to a JSON file."""
+def save_to_file(entries, output_path, format_type, logger):
+    """Save time entries to a file.
+    
+    Args:
+        entries: List of time entry dictionaries
+        output_path: Path to save the file
+        format_type: 'json' for pretty JSON, 'jsonl' for newline-delimited JSON
+        logger: Logger object
+    """
     # Make sure the directory exists
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     
     with open(output_path, 'w') as f:
-        json.dump(entries, f, indent=2)
+        if format_type == 'json':
+            # Pretty JSON format
+            json.dump(entries, f, indent=2)
+        else:  # jsonl format
+            # Newline-delimited JSON format (one JSON object per line)
+            for entry in entries:
+                f.write(json.dumps(entry) + '\n')
     
-    logger.info(f"Time entries saved to {output_path}")
+    logger.info(f"Time entries saved to {output_path} in {format_type} format")
 
 def main():
     """Main function."""
@@ -77,10 +92,12 @@ def main():
         
         # Generate default output filename if not specified
         if args.output is None:
-            args.output = "timecamp_data.json"
+            # Use appropriate extension based on format
+            extension = ".json" if args.format == "json" else ".jsonl"
+            args.output = f"timecamp_data{extension}"
         
-        # Save to JSON
-        save_to_json(entries, args.output, logger)
+        # Save to file in specified format
+        save_to_file(entries, args.output, args.format, logger)
         
     except Exception as e:
         logger.error(f"Error: {str(e)}")
