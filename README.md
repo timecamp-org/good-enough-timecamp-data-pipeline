@@ -42,6 +42,38 @@ The script will automatically create the table if it doesn't exist, but you must
 5. Select appropriate location and settings for your needs
 6. Click "Create Dataset"
 
+## BigQuery Table Schema
+
+The TimeCamp data is stored in BigQuery with the following schema:
+
+| Column Name | Data Type | Description |
+|-------------|-----------|-------------|
+| id | INTEGER | Primary key, used for upsert matching |
+| duration | STRING | Duration of the time entry in seconds |
+| user_id | STRING | ID of the user who logged the time |
+| user_name | STRING | Name of the user who logged the time |
+| task_id | STRING | ID of the task the time was logged against |
+| task_note | STRING | Notes attached to the task |
+| last_modify | STRING | Timestamp of when the entry was last modified |
+| date | DATE | Date of the time entry |
+| start_time | STRING | Start time of the entry (HH:MM:SS) |
+| end_time | STRING | End time of the entry (HH:MM:SS) |
+| locked | STRING | Whether the time entry is locked (0/1) |
+| name | STRING | Name of the task |
+| addons_external_id | STRING | External ID for integrations |
+| billable | INTEGER | Whether the time entry is billable (0/1) |
+| invoiceId | STRING | ID of associated invoice |
+| color | STRING | Color code for the task |
+| description | STRING | Description of the time entry |
+| hasEntryLocationHistory | BOOLEAN | Whether location history exists |
+
+During the upsert operation:
+- Existing entries are identified by matching the `id` field
+- If a match is found, all fields are updated with the latest values
+- If no match is found, a new record is inserted with all fields
+
+This ensures your BigQuery table always contains the most up-to-date time entry data from TimeCamp.
+
 ## Usage
 
 ### Fetching TimeCamp Data
@@ -77,14 +109,7 @@ The BigQuery upload script:
 - Uses an upsert pattern to update existing records or insert new ones based on the entry ID
 - Optimizes the upload process by directly loading JSONL files
 
-## Data Flow Optimization
-
-The pipeline is optimized for efficiency:
-1. `fetch_timecamp_data.py` saves data in JSONL format by default (newline-delimited JSON)
-2. `destination_googlebigquery.py` can directly upload JSONL files to BigQuery without transformation
-3. This eliminates the need for intermediate data conversion, making the pipeline faster and more efficient
-
-## Incremental Updates
+#### Incremental Updates
 
 The BigQuery upload process uses a sophisticated upsert (update/insert) pattern:
 
