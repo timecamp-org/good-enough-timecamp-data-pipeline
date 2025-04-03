@@ -2,6 +2,8 @@
 
 A data pipeline to extract time entries from TimeCamp and load them into Google BigQuery.
 
+![TimeCamp Data Pipeline Screenshot](docs/screenshot.png)
+
 ## Setup
 
 1. Clone the repository
