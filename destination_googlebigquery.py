@@ -8,63 +8,67 @@ from pathlib import Path
 from dotenv import load_dotenv
 from common.logger import setup_logger
 
+
 def setup_bigquery_client(credentials_path=None):
     """Set up the BigQuery client.
-    
+
     Args:
         credentials_path: Path to service account JSON file
-        
+
     Returns:
         BigQuery client object
     """
     if credentials_path:
         credentials = service_account.Credentials.from_service_account_file(
-            credentials_path,
-            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            credentials_path, scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
         client = bigquery.Client(credentials=credentials)
     else:
         # Use default credentials (ADC)
         client = bigquery.Client()
-    
+
     return client
+
 
 def read_json_data(file_path, logger):
     """Read data from a JSON or JSONL file.
-    
+
     Args:
         file_path: Path to the JSON or JSONL file
         logger: Logger object
-        
+
     Returns:
         Data from the file
     """
     logger.info(f"Reading data from {file_path}")
-    
+
     try:
         # Check if file is JSONL (ends with .jsonl)
-        if file_path.endswith('.jsonl'):
+        if file_path.endswith(".jsonl"):
             # Read JSONL file (one JSON object per line)
             data = []
-            with open(file_path, 'r') as f:
+            with open(file_path, "r") as f:
                 for line in f:
                     if line.strip():  # Skip empty lines
                         data.append(json.loads(line))
         else:
             # Read standard JSON file
-            with open(file_path, 'r') as f:
+            with open(file_path, "r") as f:
                 data = json.load(f)
-        
+
         logger.info(f"Read {len(data)} records from {file_path}")
         return data
     except Exception as e:
         logger.error(f"Error reading file: {str(e)}")
         raise
 
-def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_file, logger):
+
+def upload_to_bigquery(
+    data, client, project_id, dataset_id, table_id, input_file, logger
+):
     """Upload data to BigQuery using upsert pattern."""
     table_ref = f"{project_id}.{dataset_id}.{table_id}"
-    
+
     # Check if table exists
     table_exists = False
     existing_table = None
@@ -74,7 +78,7 @@ def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_fil
         table_exists = True
     except Exception:
         logger.info(f"Table does not exist: {table_ref}")
-    
+
     # Define schema based on TimeCamp time entries format
     # Including fields for project data, rates, tags, and breadcrumbs
     schema = [
@@ -97,22 +101,17 @@ def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_fil
         bigquery.SchemaField("color", "STRING"),
         bigquery.SchemaField("description", "STRING"),
         bigquery.SchemaField("hasEntryLocationHistory", "BOOLEAN"),
-        
         # Project-related fields
         bigquery.SchemaField("project_id", "INTEGER"),
         bigquery.SchemaField("project_name", "STRING"),
-        
         # Rate-related fields
         bigquery.SchemaField("total_cost", "FLOAT"),
         bigquery.SchemaField("total_income", "FLOAT"),
         bigquery.SchemaField("rate_income", "FLOAT"),
-        
         # Tags information (as JSON)
         bigquery.SchemaField("tags", "JSON"),
-        
         # Path information
         bigquery.SchemaField("breadcrumps", "STRING"),
-        
         # User info columns
         bigquery.SchemaField("email", "STRING"),
         bigquery.SchemaField("group_name", "STRING"),
@@ -121,21 +120,23 @@ def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_fil
         bigquery.SchemaField("group_breadcrumb_level_3", "STRING"),
         bigquery.SchemaField("group_breadcrumb_level_4", "STRING"),
     ]
-    
+
     # Check if we need to update the schema
     schema_needs_update = False
     if table_exists:
         # Compare existing schema with new schema
-        existing_fields = {field.name: field.field_type for field in existing_table.schema}
+        existing_fields = {
+            field.name: field.field_type for field in existing_table.schema
+        }
         new_fields = {field.name: field.field_type for field in schema}
-        
+
         # Check if new fields are added or field types changed
         for name, field_type in new_fields.items():
             if name not in existing_fields or existing_fields[name] != field_type:
                 schema_needs_update = True
                 logger.info(f"Schema change detected: field '{name}' needs update")
                 break
-        
+
         if schema_needs_update:
             logger.info(f"Dropping existing table to update schema: {table_ref}")
             try:
@@ -146,8 +147,10 @@ def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_fil
                 logger.error(f"Error dropping table: {str(e)}")
                 raise
         else:
-            logger.info(f"Existing schema matches the required schema, keeping table: {table_ref}")
-    
+            logger.info(
+                f"Existing schema matches the required schema, keeping table: {table_ref}"
+            )
+
     # Create the table if it doesn't exist
     if not table_exists:
         logger.info(f"Creating table: {table_ref}")
@@ -158,59 +161,62 @@ def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_fil
         except Exception as e:
             logger.error(f"Error creating table: {str(e)}")
             raise
-    
+
     # Create a temporary table for the upsert
     temp_table_id = f"temp_{table_id}_{int(time.time())}"
     temp_table_ref = f"{project_id}.{dataset_id}.{temp_table_id}"
     logger.info(f"Creating temporary table: {temp_table_ref}")
-    
+
     # Configure job for loading data
     job_config = bigquery.LoadJobConfig(
         autodetect=False,  # Disable autodetect to use our explicit schema
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         # Use schema to ensure JSON fields are correctly handled
-        schema=schema
+        schema=schema,
     )
-    
+
     try:
         # Load data to temporary table
-        if input_file.endswith('.jsonl'):
+        if input_file.endswith(".jsonl"):
             # Load directly from JSONL
-            with open(input_file, 'rb') as source_file:
+            with open(input_file, "rb") as source_file:
                 load_job = client.load_table_from_file(
                     source_file,
                     f"{project_id}.{dataset_id}.{temp_table_id}",
-                    job_config=job_config
+                    job_config=job_config,
                 )
                 load_job.result()
         else:
             # Convert JSON to JSONL first
-            with open(input_file, 'r') as f:
+            with open(input_file, "r") as f:
                 nl_json = "\n".join(json.dumps(record) for record in data)
-            
+
             # Create a temporary file
             import tempfile
-            with tempfile.NamedTemporaryFile(mode='w+', suffix='.jsonl', delete=False) as temp_file:
+
+            with tempfile.NamedTemporaryFile(
+                mode="w+", suffix=".jsonl", delete=False
+            ) as temp_file:
                 temp_file_path = temp_file.name
                 temp_file.write(nl_json)
                 temp_file.flush()
-            
+
             try:
                 # Load from temporary file
-                with open(temp_file_path, 'rb') as source_file:
+                with open(temp_file_path, "rb") as source_file:
                     load_job = client.load_table_from_file(
                         source_file,
                         f"{project_id}.{dataset_id}.{temp_table_id}",
-                        job_config=job_config
+                        job_config=job_config,
                     )
                     load_job.result()
             finally:
                 # Clean up temporary file
                 os.unlink(temp_file_path)
-        
+
         logger.info(f"Data loaded to temporary table ({len(data)} records)")
-        
+
         # Perform merge operation (upsert)
         # This MERGE SQL statement performs an upsert operation:
         # 1. When a record with the same ID exists, it updates all fields with new values
@@ -296,13 +302,13 @@ def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_fil
             CAST(S.group_breadcrumb_level_4 AS STRING)
           )
         """
-        
+
         logger.info("Performing MERGE operation")
         merge_job = client.query(merge_sql)
         merge_job.result()
-        
+
         logger.info("MERGE operation completed successfully")
-        
+
     finally:
         # Always clean up the temporary table
         try:
@@ -311,52 +317,58 @@ def upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_fil
         except Exception as e:
             logger.warning(f"Failed to delete temporary table: {str(e)}")
 
+
 def main():
     """Main function."""
     # Set up logger
-    logger = setup_logger('bigquery_upload', debug=False)
-    
+    logger = setup_logger("bigquery_upload", debug=False)
+
     # Load environment variables
     load_dotenv()
-    
+
     # Get configuration from environment variables
     credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
     dataset_id = os.getenv("BIGQUERY_DATASET")
     table_id = os.getenv("BIGQUERY_TABLE")
-    
+
     # Check for input file (prefer JSONL)
     input_file = "timecamp_data.jsonl"
     if not os.path.exists(input_file):
         input_file = "timecamp_data.json"
-    
+
     # Validate required parameters
     if not project_id:
-        logger.error("Project ID is required. Set GOOGLE_CLOUD_PROJECT in your .env file.")
+        logger.error(
+            "Project ID is required. Set GOOGLE_CLOUD_PROJECT in your .env file."
+        )
         exit(1)
-    
+
     if not dataset_id:
         logger.error("Dataset ID is required. Set BIGQUERY_DATASET in your .env file.")
         exit(1)
-    
+
     if not table_id:
         logger.error("Table ID is required. Set BIGQUERY_TABLE in your .env file.")
         exit(1)
-    
+
     try:
         # Read data from file
         data = read_json_data(input_file, logger)
-        
+
         # Set up BigQuery client
         client = setup_bigquery_client(credentials_path)
-        
+
         # Upload data to BigQuery using upsert pattern
-        upload_to_bigquery(data, client, project_id, dataset_id, table_id, input_file, logger)
-        
+        upload_to_bigquery(
+            data, client, project_id, dataset_id, table_id, input_file, logger
+        )
+
         logger.info("Data successfully uploaded to BigQuery")
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         exit(1)
 
+
 if __name__ == "__main__":
-    main() 
+    main()
