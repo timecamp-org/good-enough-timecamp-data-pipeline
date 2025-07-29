@@ -280,8 +280,8 @@ def enrich_activities_with_application_details(activities, api, logger):
     
     logger.info(f"Found {len(application_ids)} unique application IDs to fetch details for")
     
-    # Fetch application details in batches
-    applications = api.get_applications(list(application_ids), batch_size=200)
+    # Fetch application details in batches (using cache)
+    applications = api.get_applications_with_cache(list(application_ids), batch_size=200)
     
     # Log some debug information about the applications structure
     if logger.isEnabledFor(10):  # DEBUG level

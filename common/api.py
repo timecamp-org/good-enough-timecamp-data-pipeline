@@ -1,6 +1,8 @@
 import time
 import requests
 import warnings
+import json
+import os
 from typing import Dict, List, Any, Optional
 from common.logger import setup_logger
 from common.utils import TimeCampConfig
@@ -14,6 +16,7 @@ class TimeCampAPI:
     def __init__(self, config: TimeCampConfig):
         self.base_url = f"https://{config.domain}/third_party/api"
         self.headers = {"Accept": "application/json", "Content-Type": "application/json", "Authorization": f"Bearer {config.api_key}"}
+        self.applications_cache_file = "applications_cache.json"
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -255,4 +258,69 @@ class TimeCampAPI:
                 all_apps.update(apps_batch)
             
         logger.debug(f"Retrieved {len(all_apps)} application details")
-        return all_apps 
+        return all_apps
+
+    def _load_applications_cache(self) -> Dict[str, Dict[str, Any]]:
+        """Load applications cache from file."""
+        if not os.path.exists(self.applications_cache_file):
+            logger.debug("Applications cache file does not exist, starting with empty cache")
+            return {}
+        
+        try:
+            with open(self.applications_cache_file, 'r') as f:
+                cache = json.load(f)
+                logger.debug(f"Loaded applications cache with {len(cache)} entries")
+                return cache
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Failed to load applications cache: {e}. Starting with empty cache")
+            return {}
+
+    def _save_applications_cache(self, cache: Dict[str, Dict[str, Any]]) -> None:
+        """Save applications cache to file."""
+        try:
+            with open(self.applications_cache_file, 'w') as f:
+                json.dump(cache, f, indent=2)
+                logger.debug(f"Saved applications cache with {len(cache)} entries")
+        except IOError as e:
+            logger.error(f"Failed to save applications cache: {e}")
+
+    def get_applications_with_cache(self, application_ids: List[str], date: Optional[str] = None, 
+                                  batch_size: int = 200) -> Dict[str, Dict[str, Any]]:
+        """Get application details for specified application IDs with caching.
+        
+        Args:
+            application_ids: List of application IDs to fetch
+            date: Optional date for filtering (YYYY-MM-DD format)
+            batch_size: Number of application IDs to process per batch (default: 200)
+            
+        Returns:
+            Dict mapping application_id to application details
+        """
+        # Load existing cache
+        cache = self._load_applications_cache()
+        
+        # Determine which application IDs are missing from cache
+        missing_ids = [app_id for app_id in application_ids if app_id not in cache]
+        
+        logger.debug(f"Total application IDs requested: {len(application_ids)}")
+        logger.debug(f"Found in cache: {len(application_ids) - len(missing_ids)}")
+        logger.debug(f"Missing from cache: {len(missing_ids)}")
+        
+        # Fetch missing applications from API if any
+        if missing_ids:
+            logger.info(f"Fetching {len(missing_ids)} missing applications from API")
+            new_apps = self.get_applications(missing_ids, date, batch_size)
+            
+            # Update cache with newly fetched applications
+            cache.update(new_apps)
+            
+            # Save updated cache
+            self._save_applications_cache(cache)
+        else:
+            logger.info("All requested applications found in cache, no API calls needed")
+        
+        # Return only the requested application IDs from cache
+        result = {app_id: cache[app_id] for app_id in application_ids if app_id in cache}
+        
+        logger.debug(f"Returning {len(result)} application details")
+        return result 
