@@ -10,26 +10,25 @@ from common.utils import TimeCampConfig
 # Suppress SSL verification warnings
 warnings.filterwarnings('ignore', message='Unverified HTTPS request')
 
-logger = setup_logger('timecamp_sync')
-
 class TimeCampAPI:
-    def __init__(self, config: TimeCampConfig):
+    def __init__(self, config: TimeCampConfig, debug: bool = False):
         self.base_url = f"https://{config.domain}/third_party/api"
         self.headers = {"Accept": "application/json", "Content-Type": "application/json", "Authorization": f"Bearer {config.api_key}"}
         self.applications_cache_file = "applications_cache.json"
+        self.logger = setup_logger('timecamp_sync', debug)
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         max_retries, retry_delay = 5, 5
         
-        logger.debug(f"API Request: {method} {url}")
+        self.logger.debug(f"API Request: {method} {url}")
 
         for attempt in range(max_retries):
             try:
                 response = requests.request(method, url, headers=self.headers, verify=False, **kwargs)
-                logger.debug(f"Response status: {response.status_code}")
-                # logger.debug(f"Response headers: {dict(response.headers)}")
-                # logger.debug(f"Response content: {response.text[:1000]}")  # First 1000 chars to avoid huge logs
+                self.logger.debug(f"Response status: {response.status_code}")
+                # self.logger.debug(f"Response headers: {dict(response.headers)}")
+                # self.logger.debug(f"Response content: {response.text[:1000]}")  # First 1000 chars to avoid huge logs
                 
                 if response.status_code == 429 and attempt < max_retries - 1:
                     time.sleep(retry_delay * (attempt + 1))
@@ -40,16 +39,16 @@ class TimeCampAPI:
                 if getattr(e.response, 'status_code', None) == 429 and attempt < max_retries - 1:
                     time.sleep(retry_delay * (attempt + 1))
                     continue
-                logger.error(f"API Error: {method} {url} - Status: {getattr(e.response, 'status_code', 'N/A')}")
+                self.logger.error(f"API Error: {method} {url} - Status: {getattr(e.response, 'status_code', 'N/A')}")
                 if hasattr(e.response, 'text'):
-                    logger.error(f"Error response: {e.response.text}")
+                    self.logger.error(f"Error response: {e.response.text}")
                 raise
         raise requests.exceptions.RequestException(f"Failed after {max_retries} retries")
 
     def get_users(self) -> List[Dict[str, Any]]:
         """Get all users with their enabled status."""
         users = self._make_request('GET', "users").json()
-        # logger.debug(f"Users: {users}")
+        # self.logger.debug(f"Users: {users}")
 
         # Get enabled status for all users in bulk
         user_ids = [int(user['user_id']) for user in users]
@@ -91,11 +90,11 @@ class TimeCampAPI:
         if opt_fields:
             params["opt_fields"] = opt_fields
         
-        logger.debug(f"Fetching time entries from {from_date} to {to_date} with params: {params}")
+        self.logger.debug(f"Fetching time entries from {from_date} to {to_date} with params: {params}")
         response = self._make_request('GET', "entries", params=params)
         entries = response.json()
         
-        logger.debug(f"Retrieved {len(entries)} time entries")
+        self.logger.debug(f"Retrieved {len(entries)} time entries")
         return entries
 
     def get_groups(self) -> List[Dict[str, Any]]:
@@ -214,23 +213,22 @@ class TimeCampAPI:
             return self._get_computer_activities_single_request(dates, include, user_ids)
         
         # Multiple users: make separate requests for each user and combine results
-        logger.debug(f"Making separate API calls for {len(user_ids)} users due to API limitations")
+        self.logger.debug(f"Making separate API calls for {len(user_ids)} users due to API limitations")
         all_activities = []
         
         for user_id in user_ids:
             try:
-                logger.debug(f"Fetching computer activities for user {user_id}")
                 user_activities = self._get_computer_activities_single_request(
                     dates, include, [user_id]
                 )
                 all_activities.extend(user_activities)
-                logger.debug(f"Retrieved {len(user_activities)} activities for user {user_id}")
+                self.logger.info(f"Retrieved {len(user_activities)} activities for user {user_id}")
             except Exception as e:
-                logger.warning(f"Failed to get activities for user {user_id}: {e}")
+                self.logger.warning(f"Failed to get activities for user {user_id}: {e}")
                 # Continue with other users even if one fails
                 continue
         
-        logger.info(f"Combined total: {len(all_activities)} computer activities from {len(user_ids)} users")
+        self.logger.info(f"Combined total: {len(all_activities)} computer activities from {len(user_ids)} users")
         return all_activities
     
     def _get_computer_activities_single_request(self, dates: List[str], include: Optional[str] = None, 
@@ -251,11 +249,11 @@ class TimeCampAPI:
         if user_ids:
             params["user_id"] = ",".join(map(str, user_ids))
         
-        logger.debug(f"Fetching computer activities for dates {dates}, user_ids: {user_ids}")
+        self.logger.debug(f"Fetching computer activities for dates {dates}, user_ids: {user_ids}")
         response = self._make_request('GET', "activity", params=params)
         activities = response.json()
         
-        logger.debug(f"Retrieved {len(activities)} computer activities")
+        self.logger.debug(f"Retrieved {len(activities)} computer activities")
         return activities
 
     def get_applications(self, application_ids: List[str], date: Optional[str] = None, 
@@ -283,7 +281,7 @@ class TimeCampAPI:
             if date:
                 params["date"] = date
             
-            logger.debug(f"Fetching applications batch {i//batch_size + 1}: {len(batch)} application IDs")
+            self.logger.debug(f"Fetching applications batch {i//batch_size + 1}: {len(batch)} application IDs")
             response = self._make_request('GET', "application", params=params)
             apps_batch = response.json()
             
@@ -291,22 +289,22 @@ class TimeCampAPI:
             if isinstance(apps_batch, dict):
                 all_apps.update(apps_batch)
             
-        logger.debug(f"Retrieved {len(all_apps)} application details")
+        self.logger.debug(f"Retrieved {len(all_apps)} application details")
         return all_apps
 
     def _load_applications_cache(self) -> Dict[str, Dict[str, Any]]:
         """Load applications cache from file."""
         if not os.path.exists(self.applications_cache_file):
-            logger.debug("Applications cache file does not exist, starting with empty cache")
+            self.logger.debug("Applications cache file does not exist, starting with empty cache")
             return {}
         
         try:
             with open(self.applications_cache_file, 'r') as f:
                 cache = json.load(f)
-                logger.debug(f"Loaded applications cache with {len(cache)} entries")
+                self.logger.debug(f"Loaded applications cache with {len(cache)} entries")
                 return cache
         except (json.JSONDecodeError, IOError) as e:
-            logger.warning(f"Failed to load applications cache: {e}. Starting with empty cache")
+            self.logger.warning(f"Failed to load applications cache: {e}. Starting with empty cache")
             return {}
 
     def _save_applications_cache(self, cache: Dict[str, Dict[str, Any]]) -> None:
@@ -314,9 +312,9 @@ class TimeCampAPI:
         try:
             with open(self.applications_cache_file, 'w') as f:
                 json.dump(cache, f, indent=2)
-                logger.debug(f"Saved applications cache with {len(cache)} entries")
+                self.logger.debug(f"Saved applications cache with {len(cache)} entries")
         except IOError as e:
-            logger.error(f"Failed to save applications cache: {e}")
+            self.logger.error(f"Failed to save applications cache: {e}")
 
     def get_applications_with_cache(self, application_ids: List[str], date: Optional[str] = None, 
                                   batch_size: int = 200) -> Dict[str, Dict[str, Any]]:
@@ -336,13 +334,13 @@ class TimeCampAPI:
         # Determine which application IDs are missing from cache
         missing_ids = [app_id for app_id in application_ids if app_id not in cache]
         
-        logger.debug(f"Total application IDs requested: {len(application_ids)}")
-        logger.debug(f"Found in cache: {len(application_ids) - len(missing_ids)}")
-        logger.debug(f"Missing from cache: {len(missing_ids)}")
+        self.logger.debug(f"Total application IDs requested: {len(application_ids)}")
+        self.logger.debug(f"Found in cache: {len(application_ids) - len(missing_ids)}")
+        self.logger.debug(f"Missing from cache: {len(missing_ids)}")
         
         # Fetch missing applications from API if any
         if missing_ids:
-            logger.info(f"Fetching {len(missing_ids)} missing applications from API")
+            self.logger.info(f"Fetching {len(missing_ids)} missing applications from API")
             new_apps = self.get_applications(missing_ids, date, batch_size)
             
             # Update cache with newly fetched applications
@@ -351,10 +349,10 @@ class TimeCampAPI:
             # Save updated cache
             self._save_applications_cache(cache)
         else:
-            logger.info("All requested applications found in cache, no API calls needed")
+            self.logger.info("All requested applications found in cache, no API calls needed")
         
         # Return only the requested application IDs from cache
         result = {app_id: cache[app_id] for app_id in application_ids if app_id in cache}
         
-        logger.debug(f"Returning {len(result)} application details")
+        self.logger.debug(f"Returning {len(result)} application details")
         return result 

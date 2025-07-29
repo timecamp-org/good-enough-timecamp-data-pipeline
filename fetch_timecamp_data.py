@@ -37,7 +37,7 @@ def setup_environment(debug=False):
     
     # Initialize TimeCamp API client
     config = TimeCampConfig.from_env()
-    timecamp_api = TimeCampAPI(config)
+    timecamp_api = TimeCampAPI(config, debug)
     
     return logger, timecamp_api
 
