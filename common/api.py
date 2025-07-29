@@ -193,6 +193,10 @@ class TimeCampAPI:
                               user_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
         """Get computer activities for specified dates.
         
+        Note: TimeCamp API requires separate calls for each user, so this method
+        automatically handles multiple user requests by making individual calls
+        and combining the results.
+        
         Args:
             dates: List of dates in YYYY-MM-DD format (max 20 dates)
             include: Optional comma-separated list of additional fields to include 
@@ -204,7 +208,37 @@ class TimeCampAPI:
         """
         if len(dates) > 20:
             raise ValueError("Maximum of 20 dates allowed")
-            
+        
+        # If no user_ids specified or only one user, use single request
+        if not user_ids or len(user_ids) == 1:
+            return self._get_computer_activities_single_request(dates, include, user_ids)
+        
+        # Multiple users: make separate requests for each user and combine results
+        logger.debug(f"Making separate API calls for {len(user_ids)} users due to API limitations")
+        all_activities = []
+        
+        for user_id in user_ids:
+            try:
+                logger.debug(f"Fetching computer activities for user {user_id}")
+                user_activities = self._get_computer_activities_single_request(
+                    dates, include, [user_id]
+                )
+                all_activities.extend(user_activities)
+                logger.debug(f"Retrieved {len(user_activities)} activities for user {user_id}")
+            except Exception as e:
+                logger.warning(f"Failed to get activities for user {user_id}: {e}")
+                # Continue with other users even if one fails
+                continue
+        
+        logger.info(f"Combined total: {len(all_activities)} computer activities from {len(user_ids)} users")
+        return all_activities
+    
+    def _get_computer_activities_single_request(self, dates: List[str], include: Optional[str] = None, 
+                                              user_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+        """Make a single API request for computer activities.
+        
+        Internal method to handle individual API calls.
+        """
         params = {}
         
         # Add dates as array parameters
@@ -217,7 +251,7 @@ class TimeCampAPI:
         if user_ids:
             params["user_id"] = ",".join(map(str, user_ids))
         
-        logger.debug(f"Fetching computer activities for dates {dates} with params: {params}")
+        logger.debug(f"Fetching computer activities for dates {dates}, user_ids: {user_ids}")
         response = self._make_request('GET', "activity", params=params)
         activities = response.json()
         

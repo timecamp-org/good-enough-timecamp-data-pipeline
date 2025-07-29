@@ -124,16 +124,31 @@ def fetch_computer_activities(api, from_date, to_date, include, user_ids, logger
     logger.info(f"Fetching TimeCamp computer activities for dates: {', '.join(dates)}")
     if include:
         logger.info(f"Including additional data: {include}")
-    if user_ids:
-        logger.info(f"Filtering by user IDs: {', '.join(map(str, user_ids))}")
     
-    # Parse user IDs if provided
+    # Parse user IDs if provided, otherwise fetch all available user IDs
     user_id_list = None
     if user_ids:
         try:
             user_id_list = [int(uid.strip()) for uid in user_ids.split(',')]
+            logger.info(f"Filtering by specified user IDs: {', '.join(map(str, user_id_list))}")
         except ValueError as e:
             raise ValueError(f"Invalid user ID format: {e}")
+    else:
+        # If no user IDs specified, fetch all available user IDs
+        logger.info("No user IDs specified, fetching all available user IDs from the system")
+        user_details = api.get_user_details()
+        all_user_ids = []
+        
+        # Extract user IDs from the user details (remove 'u' prefix if present)
+        for user_id in user_details.get('users', {}).keys():
+            numeric_id = user_id[1:] if user_id.startswith('u') else user_id
+            try:
+                all_user_ids.append(int(numeric_id))
+            except ValueError:
+                logger.warning(f"Skipping invalid user ID: {user_id}")
+        
+        user_id_list = all_user_ids
+        logger.info(f"Found {len(user_id_list)} users, fetching computer activities for all users: {user_id_list[:10]}{'...' if len(user_id_list) > 10 else ''}")
     
     # Fetch computer activities from the API
     activities = api.get_computer_activities(
