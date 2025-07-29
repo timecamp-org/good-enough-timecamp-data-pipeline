@@ -118,10 +118,7 @@ def fetch_computer_activities(api, from_date, to_date, include, user_ids, logger
     # Generate list of dates in the range
     dates = generate_date_range(from_date, to_date)
     
-    if len(dates) > 20:
-        raise ValueError(f"Date range too large: {len(dates)} days. Maximum 20 dates allowed by API.")
-    
-    logger.info(f"Fetching TimeCamp computer activities for dates: {', '.join(dates)}")
+    logger.info(f"Fetching TimeCamp computer activities for {len(dates)} dates: {dates[0]} to {dates[-1]}")
     if include:
         logger.info(f"Including additional data: {include}")
     
@@ -150,7 +147,7 @@ def fetch_computer_activities(api, from_date, to_date, include, user_ids, logger
         user_id_list = all_user_ids
         logger.info(f"Found {len(user_id_list)} users, fetching computer activities for all users: {user_id_list[:10]}{'...' if len(user_id_list) > 10 else ''}")
     
-    # Fetch computer activities from the API
+    # Fetch computer activities from the API (batching is handled automatically by the API)
     activities = api.get_computer_activities(
         dates=dates,
         include=include,

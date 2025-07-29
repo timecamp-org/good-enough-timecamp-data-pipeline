@@ -194,10 +194,11 @@ class TimeCampAPI:
         
         Note: TimeCamp API requires separate calls for each user, so this method
         automatically handles multiple user requests by making individual calls
-        and combining the results.
+        and combining the results. Also handles date ranges larger than 20 days
+        by automatically batching into multiple requests.
         
         Args:
-            dates: List of dates in YYYY-MM-DD format (max 20 dates)
+            dates: List of dates in YYYY-MM-DD format (automatically batched if > 20 dates)
             include: Optional comma-separated list of additional fields to include 
                     (e.g. "application,window_title")
             user_ids: Optional list of user IDs to filter by
@@ -205,8 +206,39 @@ class TimeCampAPI:
         Returns:
             List of computer activity dictionaries
         """
+        # Handle date batching if more than 20 dates
         if len(dates) > 20:
-            raise ValueError("Maximum of 20 dates allowed")
+            self.logger.info(f"Date range contains {len(dates)} days, batching into chunks of 20 days")
+            all_activities = []
+            
+            # Split dates into chunks of 20
+            for i in range(0, len(dates), 20):
+                date_batch = dates[i:i + 20]
+                self.logger.debug(f"Processing date batch {i//20 + 1}: {len(date_batch)} dates from {date_batch[0]} to {date_batch[-1]}")
+                
+                try:
+                    batch_activities = self._get_computer_activities_batched(date_batch, include, user_ids)
+                    all_activities.extend(batch_activities)
+                    self.logger.info(f"Retrieved {len(batch_activities)} activities for date batch {i//20 + 1}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to get activities for date batch {i//20 + 1}: {e}")
+                    # Continue with other batches even if one fails
+                    continue
+            
+            self.logger.info(f"Combined total: {len(all_activities)} computer activities from {len(dates)} days")
+            return all_activities
+        else:
+            # Single batch (20 or fewer dates)
+            return self._get_computer_activities_batched(dates, include, user_ids)
+
+    def _get_computer_activities_batched(self, dates: List[str], include: Optional[str] = None, 
+                                       user_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+        """Handle computer activities for a single batch of dates (20 or fewer).
+        
+        This method handles the user batching logic for a single date range.
+        """
+        if len(dates) > 20:
+            raise ValueError("Internal error: _get_computer_activities_batched called with > 20 dates")
         
         # If no user_ids specified or only one user, use single request
         if not user_ids or len(user_ids) == 1:
@@ -222,13 +254,13 @@ class TimeCampAPI:
                     dates, include, [user_id]
                 )
                 all_activities.extend(user_activities)
-                self.logger.info(f"Retrieved {len(user_activities)} activities for user {user_id}")
+                self.logger.debug(f"Retrieved {len(user_activities)} activities for user {user_id}")
             except Exception as e:
                 self.logger.warning(f"Failed to get activities for user {user_id}: {e}")
                 # Continue with other users even if one fails
                 continue
         
-        self.logger.info(f"Combined total: {len(all_activities)} computer activities from {len(user_ids)} users")
+        self.logger.debug(f"Batch total: {len(all_activities)} computer activities from {len(user_ids)} users")
         return all_activities
     
     def _get_computer_activities_single_request(self, dates: List[str], include: Optional[str] = None, 
