@@ -13,3 +13,4 @@ timecamp_data.json
 .DS_Store
 *.jsonl
 applications_cache.json
+*.csv
