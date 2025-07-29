@@ -184,4 +184,75 @@ class TimeCampAPI:
                                    and s.get('name') == setting_name]
                     result[user_id] = user_settings[0].get('value') if user_settings else None
         
-        return result 
+        return result
+
+    def get_computer_activities(self, dates: List[str], include: Optional[str] = None, 
+                              user_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+        """Get computer activities for specified dates.
+        
+        Args:
+            dates: List of dates in YYYY-MM-DD format (max 20 dates)
+            include: Optional comma-separated list of additional fields to include 
+                    (e.g. "application,window_title")
+            user_ids: Optional list of user IDs to filter by
+            
+        Returns:
+            List of computer activity dictionaries
+        """
+        if len(dates) > 20:
+            raise ValueError("Maximum of 20 dates allowed")
+            
+        params = {}
+        
+        # Add dates as array parameters
+        for i, date in enumerate(dates):
+            params[f"dates[{i}]"] = date
+            
+        if include:
+            params["include"] = include
+            
+        if user_ids:
+            params["user_id"] = ",".join(map(str, user_ids))
+        
+        logger.debug(f"Fetching computer activities for dates {dates} with params: {params}")
+        response = self._make_request('GET', "activity", params=params)
+        activities = response.json()
+        
+        logger.debug(f"Retrieved {len(activities)} computer activities")
+        return activities
+
+    def get_applications(self, application_ids: List[str], date: Optional[str] = None, 
+                        batch_size: int = 200) -> Dict[str, Dict[str, Any]]:
+        """Get application details for specified application IDs.
+        
+        Args:
+            application_ids: List of application IDs to fetch
+            date: Optional date for filtering (YYYY-MM-DD format)
+            batch_size: Number of application IDs to process per batch (default: 200)
+            
+        Returns:
+            Dict mapping application_id to application details
+        """
+        all_apps = {}
+        
+        # Process application IDs in batches
+        for i in range(0, len(application_ids), batch_size):
+            batch = application_ids[i:i + batch_size]
+            
+            params = {
+                "application_ids": ",".join(batch)
+            }
+            
+            if date:
+                params["date"] = date
+            
+            logger.debug(f"Fetching applications batch {i//batch_size + 1}: {len(batch)} application IDs")
+            response = self._make_request('GET', "application", params=params)
+            apps_batch = response.json()
+            
+            # Merge the batch results
+            if isinstance(apps_batch, dict):
+                all_apps.update(apps_batch)
+            
+        logger.debug(f"Retrieved {len(all_apps)} application details")
+        return all_apps 

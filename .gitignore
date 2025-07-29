@@ -11,3 +11,5 @@ timecamp_data.json
 .temp*
 *-*-*.json
 timecamp_data.jsonl
+timecamp_*.jsonl
+.DS_Store
