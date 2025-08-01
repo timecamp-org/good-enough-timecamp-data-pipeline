@@ -8,8 +8,10 @@ A data pipeline to extract TimeCamp data (time entries, computer activities) and
 pip3 install -r requirements.txt
 cp .env.sample .env
 
-# fetch computer activities
-python fetch_computer_time_data.py --from 2025-07-10 --to 2025-07-12 --debug # optional params: --user-ids "640"
+# fetch computer activities 
+# it's recommended to fetch this incrementaly - don't fetch if you already downloaded previous period of time
+# optional params: --user-ids "640"
+python fetch_computer_time_data.py --from 2025-07-10 --to 2025-07-12 --output timecamp_computer_time_data.jsonl --debug 
 
 # fetch time entries
 python fetch_timsheet_data.py --from "2023-04-01" --to "2023-04-30" --debug #optional params: --output custom_filename.jsonl
