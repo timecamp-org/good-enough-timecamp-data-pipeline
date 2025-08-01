@@ -15,3 +15,4 @@ timecamp_data.json
 applications_cache.json
 *.csv
 *.zip
+*.parquet*
