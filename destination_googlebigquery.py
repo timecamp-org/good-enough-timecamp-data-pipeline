@@ -2,70 +2,138 @@
 import os
 import json
 import time
+import argparse
 from google.cloud import bigquery
+from google.cloud import storage
 from google.oauth2 import service_account
 from pathlib import Path
 from dotenv import load_dotenv
-from common.logger import setup_logger
+import logging
+from logging.handlers import RotatingFileHandler
 
-
-def setup_bigquery_client(credentials_path=None):
-    """Set up the BigQuery client.
-
-    Args:
-        credentials_path: Path to service account JSON file
-
-    Returns:
-        BigQuery client object
-    """
-    if credentials_path:
-        credentials = service_account.Credentials.from_service_account_file(
-            credentials_path, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+def setup_logger(name: str = 'bigquery_upload', debug: bool = False) -> logging.Logger:
+    """Set up and return a logger instance."""
+    logger = logging.getLogger(name)
+    
+    if not logger.handlers:
+        logger.setLevel(logging.DEBUG)
+        
+        os.makedirs('logs', exist_ok=True)
+        
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        
+        file_handler = RotatingFileHandler(
+            'logs/bigquery_upload.log',
+            maxBytes=10*1024*1024,
+            backupCount=5
         )
-        client = bigquery.Client(credentials=credentials)
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(logging.INFO)
+        
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        console_handler.setLevel(logging.DEBUG if debug else logging.INFO)
+        
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+    
+    return logger
+
+def setup_clients(credentials_path):
+    """Set up BigQuery and Storage clients."""
+    credentials = service_account.Credentials.from_service_account_file(
+        credentials_path, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
+    bq_client = bigquery.Client(credentials=credentials)
+    storage_client = storage.Client(credentials=credentials)
+    return bq_client, storage_client
+
+def list_gcs_files(storage_client, bucket_name, prefix="", logger=None):
+    """List files in GCS bucket with optional prefix filter."""
+    bucket = storage_client.bucket(bucket_name)
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    
+    files = []
+    for blob in blobs:
+        files.append({
+            'name': blob.name,
+            'size': blob.size,
+            'created': blob.time_created,
+            'updated': blob.updated
+        })
+    
+    if logger:
+        logger.info(f"Found {len(files)} files in gs://{bucket_name}/{prefix}")
+    
+    return files
+
+def get_latest_file(storage_client, bucket_name, prefix="timecamp_incremental_data", logger=None):
+    """Get the most recently created file matching the prefix."""
+    files = list_gcs_files(storage_client, bucket_name, prefix, logger)
+    
+    if not files:
+        raise FileNotFoundError(f"No files found with prefix '{prefix}' in bucket '{bucket_name}'")
+    
+    # Sort by creation time, get latest
+    latest_file = max(files, key=lambda x: x['created'])
+    
+    if logger:
+        logger.info(f"Latest file: {latest_file['name']} (created: {latest_file['created']})")
+    
+    return latest_file['name']
+
+def download_and_convert_gcs_file(storage_client, bucket_name, file_name, logger):
+    """Download file from GCS and convert to format suitable for BigQuery."""
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(file_name)
+    
+    logger.info(f"Downloading gs://{bucket_name}/{file_name}")
+    
+    # Download content as string
+    content = blob.download_as_text()
+    
+    # Determine file format and parse accordingly
+    if file_name.endswith('.csv'):
+        # Convert CSV to JSON format
+        import csv
+        import io
+        
+        data = []
+        csv_reader = csv.DictReader(io.StringIO(content))
+        for row in csv_reader:
+            # Convert empty strings to None for proper BigQuery handling
+            cleaned_row = {}
+            for key, value in row.items():
+                if value == '':
+                    cleaned_row[key] = None
+                else:
+                    # Try to parse JSON strings back to objects (for tags field)
+                    if key == 'tags' and value and value.startswith('{'):
+                        try:
+                            cleaned_row[key] = json.loads(value)
+                        except json.JSONDecodeError:
+                            cleaned_row[key] = value
+                    else:
+                        cleaned_row[key] = value
+            data.append(cleaned_row)
+                
+    elif file_name.endswith('.jsonl'):
+        # Parse JSONL
+        data = []
+        for line in content.strip().split('\n'):
+            if line.strip():
+                data.append(json.loads(line))
+                
+    elif file_name.endswith('.json'):
+        # Parse JSON
+        data = json.loads(content)
     else:
-        # Use default credentials (ADC)
-        client = bigquery.Client()
+        raise ValueError(f"Unsupported file format: {file_name}")
+    
+    logger.info(f"Parsed {len(data)} records from {file_name}")
+    return data
 
-    return client
-
-
-def read_json_data(file_path, logger):
-    """Read data from a JSON or JSONL file.
-
-    Args:
-        file_path: Path to the JSON or JSONL file
-        logger: Logger object
-
-    Returns:
-        Data from the file
-    """
-    logger.info(f"Reading data from {file_path}")
-
-    try:
-        # Check if file is JSONL (ends with .jsonl)
-        if file_path.endswith(".jsonl"):
-            # Read JSONL file (one JSON object per line)
-            data = []
-            with open(file_path, "r") as f:
-                for line in f:
-                    if line.strip():  # Skip empty lines
-                        data.append(json.loads(line))
-        else:
-            # Read standard JSON file
-            with open(file_path, "r") as f:
-                data = json.load(f)
-
-        logger.info(f"Read {len(data)} records from {file_path}")
-        return data
-    except Exception as e:
-        logger.error(f"Error reading file: {str(e)}")
-        raise
-
-
-def upload_to_bigquery(
-    data, client, project_id, dataset_id, table_id, input_file, logger
-):
+def upload_to_bigquery(data, bq_client, project_id, dataset_id, table_id, logger):
     """Upload data to BigQuery using upsert pattern."""
     table_ref = f"{project_id}.{dataset_id}.{table_id}"
 
@@ -73,14 +141,13 @@ def upload_to_bigquery(
     table_exists = False
     existing_table = None
     try:
-        existing_table = client.get_table(table_ref)
+        existing_table = bq_client.get_table(table_ref)
         logger.info(f"Table exists: {table_ref}")
         table_exists = True
     except Exception:
         logger.info(f"Table does not exist: {table_ref}")
 
     # Define schema based on TimeCamp time entries format
-    # Including fields for project data, rates, tags, and breadcrumbs
     schema = [
         # Core time entry fields
         bigquery.SchemaField("id", "INTEGER"),
@@ -124,13 +191,11 @@ def upload_to_bigquery(
     # Check if we need to update the schema
     schema_needs_update = False
     if table_exists:
-        # Compare existing schema with new schema
         existing_fields = {
             field.name: field.field_type for field in existing_table.schema
         }
         new_fields = {field.name: field.field_type for field in schema}
 
-        # Check if new fields are added or field types changed
         for name, field_type in new_fields.items():
             if name not in existing_fields or existing_fields[name] != field_type:
                 schema_needs_update = True
@@ -140,23 +205,19 @@ def upload_to_bigquery(
         if schema_needs_update:
             logger.info(f"Dropping existing table to update schema: {table_ref}")
             try:
-                client.delete_table(table_ref)
+                bq_client.delete_table(table_ref)
                 logger.info(f"Table dropped: {table_ref}")
                 table_exists = False
             except Exception as e:
                 logger.error(f"Error dropping table: {str(e)}")
                 raise
-        else:
-            logger.info(
-                f"Existing schema matches the required schema, keeping table: {table_ref}"
-            )
 
     # Create the table if it doesn't exist
     if not table_exists:
         logger.info(f"Creating table: {table_ref}")
         table = bigquery.Table(table_ref, schema=schema)
         try:
-            client.create_table(table)
+            bq_client.create_table(table)
             logger.info(f"Table created: {table_ref}")
         except Exception as e:
             logger.error(f"Error creating table: {str(e)}")
@@ -167,61 +228,35 @@ def upload_to_bigquery(
     temp_table_ref = f"{project_id}.{dataset_id}.{temp_table_id}"
     logger.info(f"Creating temporary table: {temp_table_ref}")
 
+    # Convert data to JSONL format for BigQuery loading
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w+", suffix=".jsonl", delete=False, encoding='utf-8') as temp_file:
+        temp_file_path = temp_file.name
+        for record in data:
+            temp_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+        temp_file.flush()
+
     # Configure job for loading data
     job_config = bigquery.LoadJobConfig(
         autodetect=False,  # Disable autodetect to use our explicit schema
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-        # Use schema to ensure JSON fields are correctly handled
         schema=schema,
     )
 
     try:
         # Load data to temporary table
-        if input_file.endswith(".jsonl"):
-            # Load directly from JSONL
-            with open(input_file, "rb") as source_file:
-                load_job = client.load_table_from_file(
-                    source_file,
-                    f"{project_id}.{dataset_id}.{temp_table_id}",
-                    job_config=job_config,
-                )
-                load_job.result()
-        else:
-            # Convert JSON to JSONL first
-            with open(input_file, "r") as f:
-                nl_json = "\n".join(json.dumps(record) for record in data)
-
-            # Create a temporary file
-            import tempfile
-
-            with tempfile.NamedTemporaryFile(
-                mode="w+", suffix=".jsonl", delete=False
-            ) as temp_file:
-                temp_file_path = temp_file.name
-                temp_file.write(nl_json)
-                temp_file.flush()
-
-            try:
-                # Load from temporary file
-                with open(temp_file_path, "rb") as source_file:
-                    load_job = client.load_table_from_file(
-                        source_file,
-                        f"{project_id}.{dataset_id}.{temp_table_id}",
-                        job_config=job_config,
-                    )
-                    load_job.result()
-            finally:
-                # Clean up temporary file
-                os.unlink(temp_file_path)
+        with open(temp_file_path, "rb") as source_file:
+            load_job = bq_client.load_table_from_file(
+                source_file,
+                f"{project_id}.{dataset_id}.{temp_table_id}",
+                job_config=job_config,
+            )
+            load_job.result()
 
         logger.info(f"Data loaded to temporary table ({len(data)} records)")
 
         # Perform merge operation (upsert)
-        # This MERGE SQL statement performs an upsert operation:
-        # 1. When a record with the same ID exists, it updates all fields with new values
-        # 2. When a record with the ID doesn't exist, it inserts a new row with all fields
-        # This ensures we maintain historical data while updating existing records.
         merge_sql = f"""
         MERGE `{table_ref}` T
         USING `{temp_table_ref}` S
@@ -304,71 +339,117 @@ def upload_to_bigquery(
         """
 
         logger.info("Performing MERGE operation")
-        merge_job = client.query(merge_sql)
-        merge_job.result()
-
+        merge_job = bq_client.query(merge_sql)
+        merge_result = merge_job.result()
+        
+        # Get merge statistics if available
+        if hasattr(merge_job, 'num_dml_affected_rows'):
+            logger.info(f"MERGE completed - Rows affected: {merge_job.num_dml_affected_rows}")
+        
         logger.info("MERGE operation completed successfully")
 
     finally:
-        # Always clean up the temporary table
+        # Clean up temporary table
         try:
-            client.delete_table(temp_table_ref)
+            bq_client.delete_table(temp_table_ref)
             logger.info(f"Temporary table deleted: {temp_table_ref}")
         except Exception as e:
             logger.warning(f"Failed to delete temporary table: {str(e)}")
+        
+        # Clean up temporary file
+        try:
+            os.unlink(temp_file_path)
+        except Exception as e:
+            logger.warning(f"Failed to delete temporary file: {str(e)}")
 
+def parse_arguments():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Load TimeCamp data from Google Cloud Storage to BigQuery"
+    )
+    parser.add_argument(
+        "--bucket", 
+        default="cia_good_enough_timecamp_data", 
+        help="GCS bucket name"
+    )
+    parser.add_argument(
+        "--file-name",
+        default=None,
+        help="Specific file name in GCS (if not provided, uses latest file)"
+    )
+    parser.add_argument(
+        "--file-prefix",
+        default="timecamp_incremental_data",
+        help="File prefix to search for if --file-name not provided"
+    )
+    parser.add_argument(
+        "--credentials",
+        default="/service-account/dbt-mark_cia-data-6be89f0747c2.json",
+        help="Path to service account JSON file"
+    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--list-files", action="store_true", help="List available files in bucket and exit")
+
+    return parser.parse_args()
 
 def main():
     """Main function."""
+    args = parse_arguments()
+    
     # Set up logger
-    logger = setup_logger("bigquery_upload", debug=False)
+    logger = setup_logger("bigquery_upload", args.debug)
 
-    # Load environment variables
-    load_dotenv()
+    # Hardcoded target table configuration
+    project_id = "cia-data"
+    dataset_id = "source_timecamp_v2"
+    table_id = "good_enough_timecamp_data"
 
-    # Get configuration from environment variables
-    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-    dataset_id = os.getenv("BIGQUERY_DATASET")
-    table_id = os.getenv("BIGQUERY_TABLE")
-
-    # Check for input file (prefer JSONL)
-    input_file = "timecamp_data.jsonl"
-    if not os.path.exists(input_file):
-        input_file = "timecamp_data.json"
-
-    # Validate required parameters
-    if not project_id:
-        logger.error(
-            "Project ID is required. Set GOOGLE_CLOUD_PROJECT in your .env file."
-        )
-        exit(1)
-
-    if not dataset_id:
-        logger.error("Dataset ID is required. Set BIGQUERY_DATASET in your .env file.")
-        exit(1)
-
-    if not table_id:
-        logger.error("Table ID is required. Set BIGQUERY_TABLE in your .env file.")
+    # Validate service account file exists
+    if not os.path.exists(args.credentials):
+        logger.error(f"Service account file not found: {args.credentials}")
+        logger.error("Please ensure the file exists in the current directory.")
         exit(1)
 
     try:
-        # Read data from file
-        data = read_json_data(input_file, logger)
+        # Set up clients
+        bq_client, storage_client = setup_clients(args.credentials)
+        
+        # List files mode
+        if args.list_files:
+            files = list_gcs_files(storage_client, args.bucket, args.file_prefix, logger)
+            logger.info("Available files:")
+            for file_info in sorted(files, key=lambda x: x['created'], reverse=True):
+                logger.info(f"  {file_info['name']} ({file_info['size']} bytes, created: {file_info['created']})")
+            return
 
-        # Set up BigQuery client
-        client = setup_bigquery_client(credentials_path)
+        # Determine which file to process
+        if args.file_name:
+            file_name = args.file_name
+            logger.info(f"Using specified file: {file_name}")
+        else:
+            file_name = get_latest_file(storage_client, args.bucket, args.file_prefix, logger)
+            logger.info(f"Using latest file: {file_name}")
 
-        # Upload data to BigQuery using upsert pattern
-        upload_to_bigquery(
-            data, client, project_id, dataset_id, table_id, input_file, logger
-        )
+        # Download and parse data from GCS
+        data = download_and_convert_gcs_file(storage_client, args.bucket, file_name, logger)
 
-        logger.info("Data successfully uploaded to BigQuery")
+        if not data:
+            logger.warning("No data found in the file")
+            return
+
+        # Upload data to BigQuery
+        upload_to_bigquery(data, bq_client, project_id, dataset_id, table_id, logger)
+
+        logger.info("=== Summary ===")
+        logger.info(f"Source: gs://{args.bucket}/{file_name}")
+        logger.info(f"Destination: {project_id}.{dataset_id}.{table_id}")
+        logger.info(f"Records processed: {len(data)}")
+        logger.info("Data successfully uploaded to BigQuery!")
+        
     except Exception as e:
         logger.error(f"Error: {str(e)}")
+        logger.error("Failed to upload data to BigQuery", exc_info=True)
         exit(1)
-
 
 if __name__ == "__main__":
     main()

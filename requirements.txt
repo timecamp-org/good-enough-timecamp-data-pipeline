@@ -1,3 +1,13 @@
-requests>=2.25.0
-python-dotenv>=0.15.0
-google-cloud-bigquery>=2.30.0
+# TimeCamp Data Pipeline Requirements
+# Python 3.13.1
+
+# Google Cloud libraries
+google-cloud-bigquery==3.25.0
+google-cloud-storage==2.17.0
+google-cloud-secret-manager==2.21.1
+
+# HTTP requests
+requests==2.31.0
+
+# Environment management
+python-dotenv==1.0.1
