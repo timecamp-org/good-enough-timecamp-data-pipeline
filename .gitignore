@@ -16,3 +16,4 @@ applications_cache.json
 *.csv
 *.zip
 *.parquet*
+output/
