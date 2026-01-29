@@ -5,6 +5,18 @@ alwaysApply: true
 ---
 # Cursor Development Rules & AI Collaboration Guide
 
+## Running and testing
+
+Always check if it's correct by runnning for example
+
+```sh
+uv run --with-requirements requirements.txt dlt_fetch_timecamp.py \
+   --from yesterday --to yesterday \
+   --datasets entries,tasks,computer_activities,users \
+   --format jsonl \
+   --output ./output
+```
+
 ## 📜 Core Philosophy
 
 1.  **Simplicity:** Prioritize simple, clear, and maintainable solutions. Avoid unnecessary complexity or over-engineering.

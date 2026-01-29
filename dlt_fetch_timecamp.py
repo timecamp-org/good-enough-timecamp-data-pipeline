@@ -6,11 +6,19 @@ Usage:
     python dlt_fetch_timecamp.py --from 2024-01-01 --to 2024-01-31
     python dlt_fetch_timecamp.py --from yesterday --to yesterday
     python dlt_fetch_timecamp.py --datasets entries,users
-    python dlt_fetch_timecamp.py --datasets entries,tasks,computer_activities,users
+    python dlt_fetch_timecamp.py --datasets entries,tasks,computer_activities,users,application_names
     python dlt_fetch_timecamp.py --format parquet
     python dlt_fetch_timecamp.py --output ./output --debug
+
+Available datasets:
+    - entries: Time entries with project/task details
+    - tasks: Task hierarchy with breadcrumb paths
+    - computer_activities: Desktop app tracking data
+    - users: User details with group information
+    - application_names: Application lookup table with names and categories
 """
 import os
+import json
 import argparse
 from typing import Iterator, Dict, Any, List
 from datetime import datetime, timedelta
@@ -27,7 +35,7 @@ from common.api import TimeCampAPI
 SUPPORTED_FORMATS = ["csv", "jsonl", "parquet"]
 
 # Available datasets
-AVAILABLE_DATASETS = ["entries", "tasks", "computer_activities", "users"]
+AVAILABLE_DATASETS = ["entries", "tasks", "computer_activities", "users", "application_names"]
 
 
 def parse_arguments():
@@ -71,6 +79,46 @@ def setup_environment(debug: bool = False):
     config = TimeCampConfig.from_env()
     api = TimeCampAPI(config, debug)
     return logger, api
+
+
+def get_category_mapping() -> Dict[str, str]:
+    """Return the category ID to name mapping."""
+    return {
+        '0': 'No category',
+        '1': 'Office',
+        '2': 'Developer Tools',
+        '3': 'Chat, VoIP & Email',
+        '4': 'Graphic & Design',
+        '5': 'Home',
+        '6': 'Productivity',
+        '7': 'Utilities & Tools',
+        '8': 'Audio & Video',
+        '9': 'Games',
+        '10': 'Education',
+        '11': 'Fun',
+        '12': 'News & Blogs',
+        '13': 'Reference & Search',
+        '14': 'Shopping',
+        '15': 'Social Networking',
+        '16': 'Travel & Outdoors',
+        '17': 'Business',
+        '18': 'Hobby'
+    }
+
+
+def get_application_name_fallback(app_details: Dict[str, Any]) -> str:
+    """Get application name using fallback logic: full_name -> additional_info -> app_name."""
+    full_name = app_details.get('full_name', '') or ''
+    additional_info = app_details.get('aditional_info', '') or ''  # Note: API typo
+    app_name = app_details.get('app_name', '') or ''
+    
+    # Use first non-empty value
+    if full_name.strip():
+        return full_name.strip()
+    elif additional_info.strip():
+        return additional_info.strip()
+    else:
+        return app_name.strip()
 
 
 def get_date_range(from_date: str, to_date: str) -> List[str]:
@@ -154,34 +202,36 @@ def get_user_details_lookup(api: TimeCampAPI, logger) -> Dict[str, Dict[str, Any
     return user_info
 
 
-def enrich_entry(entry: Dict[str, Any], user_info: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    """Enrich a single time entry with user details."""
-    user_id = entry.get('user_id')
+def enrich_user_with_group(user: Dict[str, Any], user_info: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Enrich a user record with group details."""
+    user_id = user.get('user_id')
+    
+    # Initialize default empty values
+    user['group_name'] = ''
+    user['group_breadcrumb'] = ''
+    for i in range(1, 6):
+        user[f'group_level_{i}'] = ''
     
     if user_id and str(user_id) in user_info:
         user_data = user_info[str(user_id)]
-        entry['email'] = user_data['email']
+        user_groups = user_data.get('groups', {})
         
-        user_groups = user_data['groups']
         if user_groups:
+            # Get the first group (primary group)
             first_group_id = next(iter(user_groups))
             group_data = user_groups[first_group_id]
-            entry['group_name'] = group_data['group_name']
             
-            breadcrumb_path = group_data['breadcrumb_path']
-            for i in range(4):
-                entry[f'group_breadcrumb_level_{i+1}'] = breadcrumb_path[i] if i < len(breadcrumb_path) else ''
-        else:
-            entry['group_name'] = ''
-            for i in range(1, 5):
-                entry[f'group_breadcrumb_level_{i}'] = ''
-    else:
-        entry['email'] = ''
-        entry['group_name'] = ''
-        for i in range(1, 5):
-            entry[f'group_breadcrumb_level_{i}'] = ''
+            user['group_name'] = group_data.get('group_name', '')
+            
+            breadcrumb_path = group_data.get('breadcrumb_path', [])
+            # Create breadcrumb string separated by /
+            user['group_breadcrumb'] = ' / '.join(breadcrumb_path) if breadcrumb_path else ''
+            
+            # Populate group_level_1 through group_level_5
+            for i in range(5):
+                user[f'group_level_{i+1}'] = breadcrumb_path[i] if i < len(breadcrumb_path) else ''
     
-    return entry
+    return user
 
 
 @dlt.source(name="timecamp")
@@ -208,7 +258,7 @@ def timecamp_source(
     
     # Preload user info if needed for enrichment
     user_info = {}
-    if enrich_with_users and ("entries" in datasets or "computer_activities" in datasets):
+    if enrich_with_users and "users" in datasets:
         user_info = get_user_details_lookup(api, logger)
     
     if "entries" in datasets:
@@ -232,8 +282,11 @@ def timecamp_source(
             logger.info(f"Retrieved {len(entries)} time entries")
             
             for entry in entries:
-                if enrich_with_users:
-                    entry = enrich_entry(entry, user_info)
+                # Convert tags to JSON string to avoid separate entries__tags table
+                if 'tags' in entry and entry['tags']:
+                    entry['tags'] = json.dumps(entry['tags'])
+                else:
+                    entry['tags'] = None
                 yield entry
             
             logger.info(f"Processed {len(entries)} time entries")
@@ -253,7 +306,45 @@ def timecamp_source(
             tasks = api.get_tasks()
             logger.info(f"Retrieved {len(tasks)} tasks")
             
+            # Build task lookup for breadcrumb computation
+            task_lookup = {str(t.get('task_id')): t for t in tasks}
+            
+            def get_task_breadcrumb_path(task_id: str, visited: set = None) -> List[str]:
+                """Recursively build the breadcrumb path for a task."""
+                if visited is None:
+                    visited = set()
+                
+                if task_id in visited or task_id not in task_lookup:
+                    return []
+                visited.add(task_id)
+                
+                task = task_lookup[task_id]
+                name = task.get('name', '')
+                parent_id = str(task.get('parent_id', '0'))
+                
+                # Root task (no parent or parent_id is 0)
+                if not parent_id or parent_id == '0':
+                    return [name]
+                
+                parent_path = get_task_breadcrumb_path(parent_id, visited)
+                return parent_path + [name]
+            
             for task in tasks:
+                # Remove users and perms fields to avoid flattened columns and perms table
+                task.pop('users', None)
+                task.pop('perms', None)
+                
+                # Compute task breadcrumb
+                task_id = str(task.get('task_id', ''))
+                breadcrumb_path = get_task_breadcrumb_path(task_id)
+                
+                # Add task_breadcrumb as full path
+                task['task_breadcrumb'] = ' / '.join(breadcrumb_path) if breadcrumb_path else ''
+                
+                # Add task_level_1 through task_level_8
+                for i in range(8):
+                    task[f'task_level_{i+1}'] = breadcrumb_path[i] if i < len(breadcrumb_path) else ''
+                
                 yield task
         
         resources.append(tasks_resource)
@@ -276,8 +367,6 @@ def timecamp_source(
             logger.info(f"Retrieved {len(activities)} computer activities")
             
             for activity in activities:
-                if enrich_with_users:
-                    activity = enrich_entry(activity, user_info)
                 yield activity
         
         resources.append(computer_activities_resource)
@@ -296,9 +385,77 @@ def timecamp_source(
             logger.info(f"Retrieved {len(users)} users")
             
             for user in users:
+                if enrich_with_users:
+                    user = enrich_user_with_group(user, user_info)
                 yield user
         
         resources.append(users_resource)
+    
+    if "application_names" in datasets:
+        @dlt.resource(
+            name="application_names",
+            write_disposition="replace",
+            primary_key="application_id"
+        )
+        def application_names_resource() -> Iterator[Dict[str, Any]]:
+            """Fetch and yield application names from TimeCamp API.
+            
+            Note: This requires computer_activities to be fetched first to collect
+            application IDs. If not in datasets, will attempt to use cached applications.
+            """
+            logger.info("Fetching application names")
+            
+            # First, collect application IDs from computer activities
+            dates = get_date_range(from_date, to_date)
+            logger.info(f"Fetching computer activities for {len(dates)} days to collect application IDs")
+            
+            activities = api.get_computer_activities(
+                dates=dates,
+                include="application"
+            )
+            
+            # Collect unique application IDs
+            application_ids = set()
+            for activity in activities:
+                app_id = activity.get('application_id')
+                if app_id and app_id != '0':
+                    application_ids.add(str(app_id))
+            
+            if not application_ids:
+                logger.info("No application IDs found in activities")
+                return
+            
+            logger.info(f"Found {len(application_ids)} unique application IDs")
+            
+            # Fetch application details using cache
+            applications = api.get_applications_with_cache(list(application_ids), batch_size=200)
+            
+            # Get category mapping for enrichment
+            category_mapping = get_category_mapping()
+            
+            for app_id, app_details in applications.items():
+                # Use fallback logic for application name
+                application_name = get_application_name_fallback(app_details)
+                
+                # Map category ID to category name
+                category_id = str(app_details.get('category_id', '0'))
+                category_name = category_mapping.get(category_id, 'No category')
+                
+                yield {
+                    'application_id': app_id,
+                    'application_name': application_name,
+                    'app_name': app_details.get('app_name', ''),
+                    'full_name': app_details.get('full_name', ''),
+                    'additional_info': app_details.get('aditional_info', ''),  # Note: API typo
+                    'category_id': category_id,
+                    'category_name': category_name,
+                    'type': app_details.get('type', ''),
+                    'icon_url': app_details.get('icon_url', '')
+                }
+            
+            logger.info(f"Processed {len(applications)} applications")
+        
+        resources.append(application_names_resource)
     
     return resources
 
