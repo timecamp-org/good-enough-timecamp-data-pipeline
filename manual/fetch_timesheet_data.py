@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import os
 import json
+import csv
 import argparse
 from datetime import datetime
+import pandas as pd
 from dotenv import load_dotenv
 from common.logger import setup_logger
 from common.utils import TimeCampConfig, parse_date, get_yesterday
@@ -20,8 +22,12 @@ def parse_arguments():
                       help="End date (YYYY-MM-DD format or 'yesterday'). Default: yesterday")
     parser.add_argument("--output", default=None,
                       help="Output file path. Default: timecamp_data.jsonl")
-    parser.add_argument("--format", choices=["json", "jsonl"], default="jsonl",
-                      help="Output format: json (pretty) or jsonl (newline-delimited). Default: jsonl")
+    parser.add_argument(
+        "--format",
+        choices=["json", "jsonl", "csv", "parquet"],
+        default="jsonl",
+        help="Output format: json, jsonl, csv, or parquet. Default: jsonl",
+    )
     parser.add_argument("--debug", action="store_true",
                       help="Enable debug logging")
     
@@ -187,6 +193,24 @@ def enrich_entries_with_user_details(entries, api, logger):
     logger.info("Time entries enriched with user details")
     return entries
 
+def format_csv_value(value):
+    """Convert a value to a CSV-safe string."""
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
+
+
+def format_parquet_value(value):
+    """Convert a value to a parquet-safe value."""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
 def save_to_file(entries, output_path, format_type, logger):
     """Save time entries to a file.
     
@@ -199,14 +223,28 @@ def save_to_file(entries, output_path, format_type, logger):
     # Make sure the directory exists
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     
-    with open(output_path, 'w') as f:
-        if format_type == 'json':
-            # Pretty JSON format
+    if format_type == "json":
+        with open(output_path, "w") as f:
             json.dump(entries, f, indent=2)
-        else:  # jsonl format
-            # Newline-delimited JSON format (one JSON object per line)
+    elif format_type == "jsonl":
+        with open(output_path, "w") as f:
             for entry in entries:
-                f.write(json.dumps(entry) + '\n')
+                f.write(json.dumps(entry) + "\n")
+    elif format_type == "csv":
+        all_keys = sorted({key for entry in entries for key in entry.keys()})
+        with open(output_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=all_keys, quoting=csv.QUOTE_MINIMAL)
+            writer.writeheader()
+            for entry in entries:
+                row = {key: format_csv_value(entry.get(key)) for key in all_keys}
+                writer.writerow(row)
+    elif format_type == "parquet":
+        sanitized_entries = [
+            {key: format_parquet_value(value) for key, value in entry.items()}
+            for entry in entries
+        ]
+        dataframe = pd.DataFrame.from_records(sanitized_entries)
+        dataframe.to_parquet(output_path, index=False)
     
     logger.info(f"Time entries saved to {output_path} in {format_type} format")
 
@@ -233,7 +271,13 @@ def main():
         # Generate default output filename if not specified
         if args.output is None:
             # Use appropriate extension based on format
-            extension = ".json" if args.format == "json" else ".jsonl"
+            extension_map = {
+                "json": ".json",
+                "jsonl": ".jsonl",
+                "csv": ".csv",
+                "parquet": ".parquet",
+            }
+            extension = extension_map[args.format]
             args.output = f"timecamp_data{extension}"
         
         # Save to file in specified format

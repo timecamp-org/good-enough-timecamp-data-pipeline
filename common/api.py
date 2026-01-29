@@ -97,6 +97,23 @@ class TimeCampAPI:
         self.logger.debug(f"Retrieved {len(entries)} time entries")
         return entries
 
+    def get_tasks(self) -> List[Dict[str, Any]]:
+        """Get all tasks (projects) from TimeCamp.
+        
+        Returns:
+            List of task dictionaries with hierarchy information
+        """
+        self.logger.debug("Fetching all tasks")
+        response = self._make_request('GET', "tasks")
+        tasks = response.json()
+        
+        # Convert dict response to list if necessary
+        if isinstance(tasks, dict):
+            tasks = list(tasks.values())
+        
+        self.logger.debug(f"Retrieved {len(tasks)} tasks")
+        return tasks
+
     def get_groups(self) -> List[Dict[str, Any]]:
         return self._make_request('GET', "group").json()
 
