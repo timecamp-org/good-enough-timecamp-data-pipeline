@@ -1,6 +1,6 @@
 # TimeCamp Data Pipeline
 
-A data pipeline to extract TimeCamp datasets (time entries, computer activities, users, tasks, application names) and load them into various destinations (Google Big Query, S3, CSV, JSONL, Parquet, MySQL, Postgres, DuckDB, SQLite any DLT destination).
+A data pipeline to extract TimeCamp datasets from REST API (time entries, computer activities, users, tasks, application names) and load them into various destinations (Google Big Query, S3, CSV, JSONL, Parquet, MySQL, Postgres, DuckDB, SQLite - any DLT destination).
 
 ## Run
 
@@ -10,9 +10,6 @@ uv run --with-requirements requirements.txt dlt_fetch_timecamp.py \
    --datasets entries,tasks,users,computer_activities,application_names \
    --format jsonl \
    --output ./output
-
-# Debug mode
-python dlt_fetch_timecamp.py --datasets entries,users --debug
 ```
 
 ## Available Datasets
