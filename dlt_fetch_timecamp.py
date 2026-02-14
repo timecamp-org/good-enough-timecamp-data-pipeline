@@ -160,6 +160,52 @@ def get_date_range(from_date: str, to_date: str) -> List[str]:
     return dates
 
 
+ACTIVITIES_CACHE_FILE = "computer_activities_cache.json"
+CACHE_THRESHOLD_DAYS = 7
+
+
+def classify_dates(
+    dates: List[str], threshold_days: int = CACHE_THRESHOLD_DAYS
+) -> tuple:
+    """Split dates into old (cacheable) and recent (always fetch fresh).
+
+    Returns:
+        (old_dates, recent_dates) tuple of date string lists
+    """
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff = today - timedelta(days=threshold_days)
+
+    old_dates = []
+    recent_dates = []
+    for d in dates:
+        if datetime.strptime(d, "%Y-%m-%d") < cutoff:
+            old_dates.append(d)
+        else:
+            recent_dates.append(d)
+
+    return old_dates, recent_dates
+
+
+def load_activities_cache() -> Dict[str, list]:
+    """Load computer activities cache from file. Keyed by date string."""
+    if not os.path.exists(ACTIVITIES_CACHE_FILE):
+        return {}
+    try:
+        with open(ACTIVITIES_CACHE_FILE, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+
+def save_activities_cache(cache: Dict[str, list]) -> None:
+    """Save computer activities cache to file."""
+    try:
+        with open(ACTIVITIES_CACHE_FILE, "w") as f:
+            json.dump(cache, f)
+    except IOError:
+        pass
+
+
 def get_user_details_lookup(api: TimeCampAPI, logger) -> Dict[str, Dict[str, Any]]:
     """Build a user details lookup dictionary from the API."""
     logger.info("Fetching user details for enrichment")
@@ -302,6 +348,67 @@ def timecamp_source(
         ]
         logger.info(f"Found {len(active_user_ids)} active users")
 
+    # Preload computer activities for both computer_activities and application_names
+    # This avoids double-fetching and allows both resources to share the same data
+    # (DLT extracts resources in round-robin, so generators can't reliably share state)
+    preloaded_activities = None
+    preloaded_application_ids = set()
+    if "computer_activities" in datasets or "application_names" in datasets:
+        dates = get_date_range(from_date, to_date)
+        old_dates, recent_dates = classify_dates(dates)
+        logger.info(
+            f"Preloading computer activities: {len(dates)} days total "
+            f"({len(old_dates)} cacheable, {len(recent_dates)} recent)"
+        )
+
+        cache = load_activities_cache()
+        preloaded_activities = []
+
+        # Old dates: use cache when available, fetch missing
+        if old_dates:
+            cached_dates = [d for d in old_dates if d in cache]
+            missing_dates = [d for d in old_dates if d not in cache]
+
+            if cached_dates:
+                logger.info(f"Cache hit for {len(cached_dates)} old dates")
+                for d in cached_dates:
+                    preloaded_activities.extend(cache[d])
+
+            if missing_dates:
+                logger.info(
+                    f"Cache miss for {len(missing_dates)} old dates, fetching from API"
+                )
+                fetched = api.get_computer_activities(
+                    dates=missing_dates,
+                    include="application,window_title",
+                    user_ids=active_user_ids,
+                )
+                for activity in fetched:
+                    d = activity.get("end_date", "")
+                    if d:
+                        cache.setdefault(d, []).append(activity)
+                preloaded_activities.extend(fetched)
+
+        # Recent dates: always fetch fresh
+        if recent_dates:
+            logger.info(f"Fetching {len(recent_dates)} recent dates from API")
+            fetched = api.get_computer_activities(
+                dates=recent_dates,
+                include="application,window_title",
+                user_ids=active_user_ids,
+            )
+            preloaded_activities.extend(fetched)
+
+        save_activities_cache(cache)
+        logger.info(f"Preloaded {len(preloaded_activities)} computer activities total")
+
+        # Collect application IDs for application_names resource
+        for activity in preloaded_activities:
+            app_id = activity.get("application_id")
+            if app_id and str(app_id) != "0":
+                preloaded_application_ids.add(str(app_id))
+        logger.info(f"Found {len(preloaded_application_ids)} unique application IDs")
+
     if "entries" in datasets:
 
         @dlt.resource(name="entries", write_disposition="replace", primary_key="id")
@@ -394,19 +501,9 @@ def timecamp_source(
 
         @dlt.resource(name="computer_activities", write_disposition="replace")
         def computer_activities_resource() -> Iterator[Dict[str, Any]]:
-            """Fetch and yield computer activities from TimeCamp API."""
-            dates = get_date_range(from_date, to_date)
-            logger.info(f"Fetching computer activities for {len(dates)} days")
-
-            activities = api.get_computer_activities(
-                dates=dates,
-                include="application,window_title",
-                user_ids=active_user_ids,
-            )
-
-            logger.info(f"Retrieved {len(activities)} computer activities")
-
-            for activity in activities:
+            """Yield preloaded computer activities."""
+            logger.info(f"Yielding {len(preloaded_activities)} computer activities")
+            for activity in preloaded_activities:
                 yield activity
 
         resources.append(computer_activities_resource)
@@ -438,37 +535,24 @@ def timecamp_source(
         def application_names_resource() -> Iterator[Dict[str, Any]]:
             """Fetch and yield application names from TimeCamp API.
 
-            Note: This requires computer_activities to be fetched first to collect
-            application IDs. If not in datasets, will attempt to use cached applications.
+            Uses preloaded_application_ids collected during activity preloading.
             """
             logger.info("Fetching application names")
-
-            # First, collect application IDs from computer activities
-            dates = get_date_range(from_date, to_date)
             logger.info(
-                f"Fetching computer activities for {len(dates)} days to collect application IDs"
+                f"Using {len(preloaded_application_ids)} application IDs from preloaded activities"
             )
 
-            activities = api.get_computer_activities(
-                dates=dates, include="application", user_ids=active_user_ids
-            )
-
-            # Collect unique application IDs
-            application_ids = set()
-            for activity in activities:
-                app_id = activity.get("application_id")
-                if app_id and app_id != "0":
-                    application_ids.add(str(app_id))
-
-            if not application_ids:
+            if not preloaded_application_ids:
                 logger.info("No application IDs found in activities")
                 return
 
-            logger.info(f"Found {len(application_ids)} unique application IDs")
+            logger.info(
+                f"Found {len(preloaded_application_ids)} unique application IDs"
+            )
 
             # Fetch application details using cache
             applications = api.get_applications_with_cache(
-                list(application_ids), batch_size=200
+                list(preloaded_application_ids), batch_size=200
             )
 
             # Get category mapping for enrichment

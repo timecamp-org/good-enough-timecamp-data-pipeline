@@ -13,6 +13,7 @@ timecamp_data.json
 .DS_Store
 *.jsonl
 applications_cache.json
+computer_activities_cache.json
 *.csv
 *.zip
 *.parquet*
