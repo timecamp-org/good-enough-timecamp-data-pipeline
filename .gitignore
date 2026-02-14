@@ -18,3 +18,4 @@ computer_activities_cache.json
 *.zip
 *.parquet*
 output/
+.venv/
