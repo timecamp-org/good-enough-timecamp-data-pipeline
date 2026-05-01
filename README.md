@@ -6,14 +6,8 @@ A data pipeline to extract TimeCamp datasets from REST API (time entries, comput
 
 ```bash
 uv run --with-requirements requirements.txt dlt_fetch_timecamp.py \
-   --from 2025-12-01 --to 2025-12-15 \
+   --from 2025-12-01 --to 2026-05-01 \
    --datasets entries,tasks,users,computer_activities,application_names \
-   --format jsonl \
-   --output ./output
-
-uv run --with-requirements requirements.txt dlt_fetch_timecamp.py \
-   --from 2026-04-01 --to 2026-05-01 \
-   --datasets entries,tasks,users \
    --format jsonl \
    --output ./output
 ```
@@ -24,15 +18,9 @@ uv run --with-requirements requirements.txt dlt_fetch_timecamp.py \
 |---------|-------------|
 | `entries` | Time entries with project/task details |
 | `tasks` | Projects & tasks hierarchy with breadcrumb paths and details |
-| `computer_activities` | Desktop app tracking data |
 | `users` | User details with group information |
+| `computer_activities` | Desktop app tracking data |
 | `application_names` | Application lookup table with names and categories |
-
-## Todo
-
-- [x] add application names
-- [ ] fix tags in entries
-- [ ] fix warnings
 
 ## License
 
