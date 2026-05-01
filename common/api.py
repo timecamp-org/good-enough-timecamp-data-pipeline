@@ -104,7 +104,7 @@ class TimeCampAPI:
             List of task dictionaries with hierarchy information
         """
         self.logger.debug("Fetching all tasks")
-        response = self._make_request('GET', "tasks")
+        response = self._make_request('GET', "tasks", params={"status": "all"})
         tasks = response.json()
         
         # Convert dict response to list if necessary
@@ -136,7 +136,7 @@ class TimeCampAPI:
                 "1234": [{"group_id": "5678", "role_id": "2"}]
             }
         """
-        response = self._make_request('GET', "people_picker")
+        response = self._make_request('GET', "people_picker", params={"context": "admin"})
         data = response.json()
         
         user_roles = {}
@@ -169,7 +169,7 @@ class TimeCampAPI:
         Returns:
             Dict containing user details and group structure with all hierarchy levels
         """
-        response = self._make_request('GET', "people_picker")
+        response = self._make_request('GET', "people_picker", params={"context": "admin"})
         return response.json()
 
     def get_user_settings(self, user_ids: List[int], setting_name: str, batch_size: int = 50) -> Dict[int, Optional[str]]:

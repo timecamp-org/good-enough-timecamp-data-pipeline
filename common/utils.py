@@ -18,7 +18,7 @@ class TimeCampConfig:
 
     @classmethod
     def from_env(cls):
-        load_dotenv()
+        load_dotenv(override=True)
         return cls(
             api_key=os.getenv("TIMECAMP_API_KEY", ""),
             domain=os.getenv("TIMECAMP_DOMAIN", "app.timecamp.com"),

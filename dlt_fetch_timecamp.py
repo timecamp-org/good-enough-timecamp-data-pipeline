@@ -19,10 +19,11 @@ Available datasets:
 """
 
 import argparse
+from calendar import monthrange
 import json
 import os
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterator, List
+from typing import Any, Dict, Iterator, List, Tuple
 
 import dlt
 from dotenv import load_dotenv
@@ -33,6 +34,7 @@ from common.utils import TimeCampConfig, get_yesterday, parse_date
 
 # Supported output formats for dlt filesystem destination
 SUPPORTED_FORMATS = ["csv", "jsonl", "parquet"]
+ENTRY_BATCH_MONTHS = 6
 
 # Available datasets
 AVAILABLE_DATASETS = [
@@ -100,7 +102,7 @@ def parse_datasets(datasets_str: str) -> List[str]:
 def setup_environment(debug: bool = False):
     """Set up the environment and return API client."""
     logger = setup_logger("dlt_timecamp", debug)
-    load_dotenv()
+    load_dotenv(override=True)
     config = TimeCampConfig.from_env()
     api = TimeCampAPI(config, debug)
     return logger, api
@@ -158,6 +160,35 @@ def get_date_range(from_date: str, to_date: str) -> List[str]:
         current += timedelta(days=1)
 
     return dates
+
+
+def add_months(date_value: datetime, months: int) -> datetime:
+    """Add calendar months while keeping the day valid for the target month."""
+    month_index = date_value.month - 1 + months
+    year = date_value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(date_value.day, monthrange(year, month)[1])
+    return date_value.replace(year=year, month=month, day=day)
+
+
+def get_date_period_batches(
+    from_date: str, to_date: str, months: int = ENTRY_BATCH_MONTHS
+) -> List[Tuple[str, str]]:
+    """Split an inclusive date period into calendar-month batches."""
+    from_dt = datetime.strptime(from_date, "%Y-%m-%d")
+    to_dt = datetime.strptime(to_date, "%Y-%m-%d")
+
+    batches = []
+    current = from_dt
+    while current <= to_dt:
+        next_start = add_months(current, months)
+        batch_end = min(next_start - timedelta(days=1), to_dt)
+        batches.append(
+            (current.strftime("%Y-%m-%d"), batch_end.strftime("%Y-%m-%d"))
+        )
+        current = batch_end + timedelta(days=1)
+
+    return batches
 
 
 ACTIVITIES_CACHE_FILE = "computer_activities_cache.json"
@@ -429,31 +460,60 @@ def timecamp_source(
             """Fetch and yield time entries from TimeCamp API."""
             logger.info(f"Fetching time entries from {from_date} to {to_date}")
 
-            entries = api.get_time_entries(
-                from_date,
-                to_date,
-                include_project=True,
-                include_rates=True,
-                opt_fields="tags,breadcrumps",
-            )
+            date_batches = get_date_period_batches(from_date, to_date)
+            if len(date_batches) > 1:
+                logger.info(
+                    f"Time entries period is longer than {ENTRY_BATCH_MONTHS} months, "
+                    f"batching into {len(date_batches)} requests"
+                )
 
-            logger.info(f"Retrieved {len(entries)} time entries")
+            total_entries = 0
+            for batch_index, (batch_from, batch_to) in enumerate(date_batches, start=1):
+                if len(date_batches) > 1:
+                    logger.info(
+                        f"Fetching time entries batch {batch_index}/{len(date_batches)}: "
+                        f"{batch_from} to {batch_to}"
+                    )
 
-            for entry in entries:
-                # Convert tags to JSON string to avoid separate entries__tags table
-                if "tags" in entry and entry["tags"]:
-                    entry["tags"] = json.dumps(entry["tags"])
+                entries = api.get_time_entries(
+                    batch_from,
+                    batch_to,
+                    include_project=True,
+                    include_rates=True,
+                    opt_fields="tags,breadcrumps",
+                )
+
+                total_entries += len(entries)
+                if len(date_batches) > 1:
+                    logger.info(
+                        f"Retrieved {len(entries)} time entries for batch {batch_index}"
+                    )
                 else:
-                    entry["tags"] = None
-                yield entry
+                    logger.info(f"Retrieved {len(entries)} time entries")
 
-            logger.info(f"Processed {len(entries)} time entries")
+                for entry in entries:
+                    # Convert tags to JSON string to avoid separate entries__tags table
+                    if "tags" in entry and entry["tags"]:
+                        entry["tags"] = json.dumps(entry["tags"])
+                    else:
+                        entry["tags"] = None
+                    yield entry
+
+            logger.info(f"Processed {total_entries} time entries")
 
         resources.append(entries_resource)
 
     if "tasks" in datasets:
 
-        @dlt.resource(name="tasks", write_disposition="replace", primary_key="task_id")
+        @dlt.resource(
+            name="tasks",
+            write_disposition="replace",
+            primary_key="task_id",
+            columns={
+                "public_hash": {"data_type": "text"},
+                "task_key": {"data_type": "text"},
+            },
+        )
         def tasks_resource() -> Iterator[Dict[str, Any]]:
             """Fetch and yield tasks from TimeCamp API."""
             logger.info("Fetching tasks")

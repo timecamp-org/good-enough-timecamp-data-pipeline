@@ -10,6 +10,12 @@ uv run --with-requirements requirements.txt dlt_fetch_timecamp.py \
    --datasets entries,tasks,users,computer_activities,application_names \
    --format jsonl \
    --output ./output
+
+uv run --with-requirements requirements.txt dlt_fetch_timecamp.py \
+   --from 2026-04-01 --to 2026-05-01 \
+   --datasets entries,tasks,users \
+   --format jsonl \
+   --output ./output
 ```
 
 ## Available Datasets
