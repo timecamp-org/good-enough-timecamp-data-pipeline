@@ -684,7 +684,8 @@ def run_pipeline(
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Output format: {output_format}")
 
-    os.makedirs(output_dir, exist_ok=True)
+    if "://" not in output_dir:
+        os.makedirs(output_dir, exist_ok=True)
 
     # Disable gzip compression for output files
     dlt.config["normalize.data_writer.disable_compression"] = True

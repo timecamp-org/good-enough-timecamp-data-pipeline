@@ -10,6 +10,8 @@ uv run --with-requirements requirements.txt dlt_fetch_timecamp.py \
    --output ./output
 ```
 
+For S3 output, see [Fetch Project Data to S3](docs/fetch-project-data-to-s3.md).
+
 > **Note:** For accurate all-time project totals, fetch all historical entries.
 > The cumulative column will only reflect data within the fetched period.
 
