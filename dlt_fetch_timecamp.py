@@ -619,9 +619,7 @@ def timecamp_source(
                 return
 
             # Fetch application details using cache
-            applications = api.get_applications_with_cache(
-                list(preloaded_application_ids), batch_size=200
-            )
+            applications = api.get_applications_with_cache(list(preloaded_application_ids))
 
             # Get category mapping for enrichment
             category_mapping = get_category_mapping()

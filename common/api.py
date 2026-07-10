@@ -20,6 +20,7 @@ class TimeCampAPI:
     def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         max_retries, retry_delay = 5, 5
+        retryable_status_codes = {429, 500, 502, 503, 504}
         
         self.logger.debug(f"API Request: {method} {url}")
 
@@ -30,15 +31,32 @@ class TimeCampAPI:
                 # self.logger.debug(f"Response headers: {dict(response.headers)}")
                 # self.logger.debug(f"Response content: {response.text[:1000]}")  # First 1000 chars to avoid huge logs
                 
-                if response.status_code == 429 and attempt < max_retries - 1:
-                    time.sleep(retry_delay * (attempt + 1))
+                if response.status_code in retryable_status_codes and attempt < max_retries - 1:
+                    retry_after = response.headers.get("Retry-After")
+                    if retry_after is None:
+                        try:
+                            response_body = response.json()
+                            if isinstance(response_body, dict):
+                                retry_after = response_body.get("retry_after")
+                        except ValueError:
+                            pass
+
+                    try:
+                        delay = float(retry_after)
+                        if delay < 0:
+                            raise ValueError
+                    except (TypeError, ValueError):
+                        delay = retry_delay * (attempt + 1)
+
+                    self.logger.warning(
+                        f"API request returned {response.status_code}; retrying in {delay:g} seconds "
+                        f"(attempt {attempt + 2}/{max_retries})"
+                    )
+                    time.sleep(delay)
                     continue
                 response.raise_for_status()
                 return response
             except requests.exceptions.RequestException as e:
-                if getattr(e.response, 'status_code', None) == 429 and attempt < max_retries - 1:
-                    time.sleep(retry_delay * (attempt + 1))
-                    continue
                 self.logger.error(f"API Error: {method} {url} - Status: {getattr(e.response, 'status_code', 'N/A')}")
                 if hasattr(e.response, 'text'):
                     self.logger.error(f"Error response: {e.response.text}")
@@ -306,13 +324,13 @@ class TimeCampAPI:
         return activities
 
     def get_applications(self, application_ids: List[str], date: Optional[str] = None, 
-                        batch_size: int = 200) -> Dict[str, Dict[str, Any]]:
+                        batch_size: int = 100) -> Dict[str, Dict[str, Any]]:
         """Get application details for specified application IDs.
         
         Args:
             application_ids: List of application IDs to fetch
             date: Optional date for filtering (YYYY-MM-DD format)
-            batch_size: Number of application IDs to process per batch (default: 200)
+            batch_size: Number of application IDs to process per batch (default: 100)
             
         Returns:
             Dict mapping application_id to application details
@@ -366,13 +384,13 @@ class TimeCampAPI:
             self.logger.error(f"Failed to save applications cache: {e}")
 
     def get_applications_with_cache(self, application_ids: List[str], date: Optional[str] = None, 
-                                  batch_size: int = 200) -> Dict[str, Dict[str, Any]]:
+                                  batch_size: int = 100) -> Dict[str, Dict[str, Any]]:
         """Get application details for specified application IDs with caching.
         
         Args:
             application_ids: List of application IDs to fetch
             date: Optional date for filtering (YYYY-MM-DD format)
-            batch_size: Number of application IDs to process per batch (default: 200)
+            batch_size: Number of application IDs to process per batch (default: 100)
             
         Returns:
             Dict mapping application_id to application details
@@ -404,4 +422,4 @@ class TimeCampAPI:
         result = {app_id: cache[app_id] for app_id in application_ids if app_id in cache}
         
         self.logger.debug(f"Returning {len(result)} application details")
-        return result 
+        return result
