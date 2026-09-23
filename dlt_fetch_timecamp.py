@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DLT pipeline to fetch TimeCamp data and save to files.
+DLT pipeline to fetch TimeCamp data and load it to a dlt destination.
 
 Usage:
     python dlt_fetch_timecamp.py --from 2024-01-01 --to 2024-01-31
@@ -9,6 +9,7 @@ Usage:
     python dlt_fetch_timecamp.py --datasets entries,tasks,computer_activities,users,application_names
     python dlt_fetch_timecamp.py --format parquet
     python dlt_fetch_timecamp.py --output ./output --debug
+    python dlt_fetch_timecamp.py --destination bigquery
 
 Available datasets:
     - entries: Time entries with project/task details
@@ -22,8 +23,9 @@ import argparse
 from calendar import monthrange
 import json
 import os
+import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import dlt
 from dotenv import load_dotenv
@@ -32,8 +34,6 @@ from common.api import TimeCampAPI
 from common.logger import setup_logger
 from common.utils import TimeCampConfig, get_yesterday, parse_date
 
-# Supported output formats for dlt filesystem destination
-SUPPORTED_FORMATS = ["csv", "jsonl", "parquet"]
 ENTRY_BATCH_MONTHS = 6
 
 # Available datasets
@@ -49,7 +49,7 @@ AVAILABLE_DATASETS = [
 def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Fetch TimeCamp data using DLT and save to files",
+        description="Fetch TimeCamp data using DLT and load it to a dlt destination",
         epilog="By default, fetches data for yesterday unless specified otherwise.",
     )
     parser.add_argument(
@@ -67,14 +67,18 @@ def parse_arguments():
     parser.add_argument(
         "--output",
         default="./timecamp_data",
-        help="Output directory path. Default: ./timecamp_data",
+        help="Filesystem output path. Default: ./timecamp_data",
+    )
+    parser.add_argument(
+        "--destination",
+        default="filesystem",
+        help="dlt destination name. Default: filesystem",
     )
     parser.add_argument(
         "--format",
         dest="output_format",
-        choices=SUPPORTED_FORMATS,
-        default="csv",
-        help="Output format: csv, jsonl, or parquet. Default: csv",
+        default=None,
+        help="Optional dlt loader file format. Defaults to csv for filesystem or the destination's preferred format",
     )
     parser.add_argument(
         "--datasets",
@@ -83,7 +87,12 @@ def parse_arguments():
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.destination != "filesystem" and args.output != "./timecamp_data":
+        parser.error("--output is only available for the filesystem destination")
+    if args.destination == "filesystem" and args.output_format is None:
+        args.output_format = "csv"
+    return args
 
 
 def parse_datasets(datasets_str: str) -> List[str]:
@@ -657,43 +666,56 @@ def run_pipeline(
     from_date: str,
     to_date: str,
     output_dir: str,
-    output_format: str,
+    output_format: Optional[str],
     datasets: List[str],
     logger,
     api: TimeCampAPI,
+    destination: str = "filesystem",
 ):
     """
-    Run the DLT pipeline to fetch TimeCamp data and save to files.
+    Run the DLT pipeline to fetch TimeCamp data and load it to a destination.
 
     Args:
         from_date: Start date string
         to_date: End date string
-        output_dir: Output directory for files
-        output_format: Output format (csv, jsonl, parquet)
+        output_dir: Output directory for filesystem files
+        output_format: Optional dlt loader file format
         datasets: List of datasets to fetch
         logger: Logger instance
         api: TimeCampAPI instance
+        destination: dlt destination name
     """
     from_date_parsed = parse_date(from_date)
     to_date_parsed = parse_date(to_date)
 
     logger.info(f"Starting DLT pipeline: {from_date_parsed} to {to_date_parsed}")
     logger.info(f"Datasets: {', '.join(datasets)}")
-    logger.info(f"Output directory: {output_dir}")
-    logger.info(f"Output format: {output_format}")
+    logger.info(f"Destination: {destination}")
+    logger.info(f"Output format: {output_format or 'destination default'}")
 
-    if "://" not in output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-
-    # Disable gzip compression for output files
-    dlt.config["normalize.data_writer.disable_compression"] = True
-
-    pipeline = dlt.pipeline(
-        pipeline_name="timecamp",
-        destination=dlt.destinations.filesystem(
+    if destination == "filesystem":
+        logger.info(f"Output directory: {output_dir}")
+        if "://" not in output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        pipeline_destination = dlt.destinations.filesystem(
             bucket_url=output_dir,
             layout="{table_name}.{file_id}.{ext}",
-        ),
+        )
+    else:
+        pipeline_destination = destination
+
+    if destination == "filesystem":
+        # Disable gzip compression for output files
+        dlt.config["normalize.data_writer.disable_compression"] = True
+
+    pipeline_name = (
+        "timecamp"
+        if destination == "filesystem"
+        else f"timecamp_{re.sub(r'[^a-zA-Z0-9_]', '_', destination)}"
+    )
+    pipeline = dlt.pipeline(
+        pipeline_name=pipeline_name,
+        destination=pipeline_destination,
         dataset_name="timecamp",
     )
 
@@ -709,7 +731,10 @@ def run_pipeline(
     load_info = pipeline.run(source, loader_file_format=output_format)
 
     logger.info(f"Pipeline completed: {load_info}")
-    logger.info(f"{output_format.upper()} files saved to: {output_dir}")
+    if destination == "filesystem":
+        logger.info(f"{output_format.upper()} files saved to: {output_dir}")
+    else:
+        logger.info(f"Data loaded to {destination} dataset: timecamp")
 
     return load_info
 
@@ -736,11 +761,15 @@ def main():
             datasets=datasets,
             logger=logger,
             api=api,
+            destination=args.destination,
         )
 
         print(f"\nPipeline completed successfully!")
         print(f"Datasets: {', '.join(datasets)}")
-        print(f"Data saved to: {args.output} ({args.output_format} format)")
+        if args.destination == "filesystem":
+            print(f"Data saved to: {args.output} ({args.output_format} format)")
+        else:
+            print(f"Data loaded to {args.destination} dataset: timecamp")
         print(f"\nLoad info:\n{load_info}")
 
     except Exception as e:

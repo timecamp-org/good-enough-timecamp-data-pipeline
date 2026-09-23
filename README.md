@@ -12,6 +12,9 @@ uv run --with-requirements requirements.txt dlt_fetch_timecamp.py \
    --output ./output
 ```
 
+Use `--destination` with a dlt destination name and install its required dlt extra.
+For Google BigQuery setup, see [Export to BigQuery](docs/export-to-bigquery.md).
+
 ## Available Datasets
 
 | Dataset | Description |
