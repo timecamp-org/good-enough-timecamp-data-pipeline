@@ -86,6 +86,35 @@ class TimeCampAPIRequestTests(unittest.TestCase):
         ]
         self.assertEqual(batch_sizes, [100, 100, 1])
 
+    def test_get_custom_field_values_follows_cursor(self):
+        first_value = {"resourceId": 1, "templateId": 5, "value": "To do"}
+        second_value = {"resourceId": 2, "templateId": 5, "value": "Done"}
+        self.api._make_request = Mock(
+            side_effect=[
+                Mock(json=Mock(return_value={"data": [first_value], "nextCursor": "next"})),
+                Mock(json=Mock(return_value={"data": [second_value], "nextCursor": None})),
+            ]
+        )
+
+        values = self.api.get_custom_field_values("task")
+
+        self.assertEqual(values, [first_value, second_value])
+        self.assertEqual(
+            self.api._make_request.call_args_list,
+            [
+                call(
+                    "POST",
+                    "v3/custom-fields/values/search",
+                    json={"resourceType": "task", "limit": 1000},
+                ),
+                call(
+                    "POST",
+                    "v3/custom-fields/values/search",
+                    json={"resourceType": "task", "limit": 1000, "cursor": "next"},
+                ),
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

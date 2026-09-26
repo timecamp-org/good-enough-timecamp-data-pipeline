@@ -132,6 +132,31 @@ class TimeCampAPI:
         self.logger.debug(f"Retrieved {len(tasks)} tasks")
         return tasks
 
+    def get_custom_field_values(self, resource_type: str, page_size: int = 1000) -> List[Dict[str, Any]]:
+        """Get all filled custom field values of one resource type.
+
+        Uses the list mode of the bulk values endpoint. It returns only values that are set
+        (template defaults are not listed) and omits resources the API user cannot read.
+
+        Args:
+            resource_type: "entry", "task" or "user"
+            page_size: Number of values per request (API maximum: 1000)
+
+        Returns:
+            List of value dictionaries (resourceId, templateId, name, fieldType, value, ...)
+        """
+        values = []
+        cursor = None
+        while True:
+            body = {"resourceType": resource_type, "limit": page_size}
+            if cursor:
+                body["cursor"] = cursor
+            page = self._make_request('POST', "v3/custom-fields/values/search", json=body).json()
+            values.extend(page["data"])
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return values
+
     def get_groups(self) -> List[Dict[str, Any]]:
         return self._make_request('GET', "group").json()
 

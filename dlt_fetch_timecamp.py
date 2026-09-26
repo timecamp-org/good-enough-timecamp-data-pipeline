@@ -10,6 +10,7 @@ Usage:
     python dlt_fetch_timecamp.py --format parquet
     python dlt_fetch_timecamp.py --output ./output --debug
     python dlt_fetch_timecamp.py --destination bigquery
+    python dlt_fetch_timecamp.py --datasets entries,tasks,users --custom-fields
 
 Available datasets:
     - entries: Time entries with project/task details
@@ -17,6 +18,9 @@ Available datasets:
     - computer_activities: Desktop app tracking data
     - users: User details with group information
     - application_names: Application lookup table with names and categories
+
+With --custom-fields, custom field values of entries, tasks and users load into
+entries_custom_fields, tasks_custom_fields and users_custom_fields.
 """
 
 import argparse
@@ -44,6 +48,25 @@ AVAILABLE_DATASETS = [
     "users",
     "application_names",
 ]
+
+# Datasets that have custom fields, mapped to the custom field resource type
+CUSTOM_FIELD_RESOURCE_TYPES = {
+    "entries": "entry",
+    "tasks": "task",
+    "users": "user",
+}
+
+# Stable schema for <dataset>_custom_fields tables, in API field order
+CUSTOM_FIELD_COLUMNS = {
+    "resource_id": {"data_type": "bigint"},
+    "template_id": {"data_type": "bigint"},
+    "name": {"data_type": "text"},
+    "resource_type": {"data_type": "text"},
+    "required": {"data_type": "bool"},
+    "field_type": {"data_type": "text"},
+    "default_value": {"data_type": "text"},
+    "value": {"data_type": "text"},
+}
 
 
 def parse_arguments():
@@ -84,6 +107,12 @@ def parse_arguments():
         "--datasets",
         default="entries",
         help=f"Comma-separated list of datasets to fetch. Available: {', '.join(AVAILABLE_DATASETS)}. Default: entries",
+    )
+    parser.add_argument(
+        "--custom-fields",
+        action="store_true",
+        help="Also load custom field values of the selected entries, tasks and users datasets "
+        "into <dataset>_custom_fields tables",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
@@ -415,6 +444,16 @@ def enrich_user_with_group(
     return user
 
 
+def custom_field_values(
+    api: TimeCampAPI, resource_type: str, logger
+) -> Iterator[Dict[str, Any]]:
+    """Fetch and yield all filled custom field values of one resource type."""
+    logger.info(f"Fetching {resource_type} custom field values")
+    values = api.get_custom_field_values(resource_type)
+    logger.info(f"Retrieved {len(values)} {resource_type} custom field values")
+    yield from values
+
+
 @dlt.source(name="timecamp")
 def timecamp_source(
     api: TimeCampAPI,
@@ -423,6 +462,7 @@ def timecamp_source(
     datasets: List[str],
     logger,
     enrich_with_users: bool = True,
+    custom_fields: bool = False,
 ):
     """
     DLT source for TimeCamp data.
@@ -434,6 +474,7 @@ def timecamp_source(
         datasets: List of datasets to fetch
         logger: Logger instance
         enrich_with_users: Whether to enrich entries with user details
+        custom_fields: Whether to load custom field values of entries, tasks and users
     """
     resources = []
 
@@ -659,6 +700,18 @@ def timecamp_source(
 
         resources.append(application_names_resource)
 
+    if custom_fields:
+        for dataset, resource_type in CUSTOM_FIELD_RESOURCE_TYPES.items():
+            if dataset in datasets:
+                resources.append(
+                    dlt.resource(
+                        custom_field_values(api, resource_type, logger),
+                        name=f"{dataset}_custom_fields",
+                        write_disposition="replace",
+                        columns=CUSTOM_FIELD_COLUMNS,
+                    )
+                )
+
     return resources
 
 
@@ -671,6 +724,7 @@ def run_pipeline(
     logger,
     api: TimeCampAPI,
     destination: str = "filesystem",
+    custom_fields: bool = False,
 ):
     """
     Run the DLT pipeline to fetch TimeCamp data and load it to a destination.
@@ -684,12 +738,14 @@ def run_pipeline(
         logger: Logger instance
         api: TimeCampAPI instance
         destination: dlt destination name
+        custom_fields: Whether to load custom field values of entries, tasks and users
     """
     from_date_parsed = parse_date(from_date)
     to_date_parsed = parse_date(to_date)
 
     logger.info(f"Starting DLT pipeline: {from_date_parsed} to {to_date_parsed}")
     logger.info(f"Datasets: {', '.join(datasets)}")
+    logger.info(f"Custom fields: {'yes' if custom_fields else 'no'}")
     logger.info(f"Destination: {destination}")
     logger.info(f"Output format: {output_format or 'destination default'}")
 
@@ -726,6 +782,7 @@ def run_pipeline(
         datasets=datasets,
         logger=logger,
         enrich_with_users=True,
+        custom_fields=custom_fields,
     )
 
     load_info = pipeline.run(source, loader_file_format=output_format)
@@ -762,6 +819,7 @@ def main():
             logger=logger,
             api=api,
             destination=args.destination,
+            custom_fields=args.custom_fields,
         )
 
         print(f"\nPipeline completed successfully!")

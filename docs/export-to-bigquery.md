@@ -44,3 +44,18 @@ yesterday's `entries` replaces the previous `entries` table with yesterday's
 records. To retain a longer range, pass that whole range on each run. `tasks`
 and `users` fetch the current state; `application_names` is derived from
 computer activities in the requested date range.
+
+Add `--custom-fields` to also load the `entries_custom_fields`,
+`tasks_custom_fields` and `users_custom_fields` tables. Each row is one set
+value (`resource_id`, `template_id`, `name`, `field_type`, `value`); unset
+template defaults are not included. They also contain the current state, so
+`entries_custom_fields` has the values of all entries, not only the requested
+date range. `users.user_id` is a `STRING` column, so cast it when you join user
+custom fields:
+
+```sql
+SELECT u.email, cf.name, cf.value
+FROM `your-google-cloud-project-id.timecamp.users` u
+JOIN `your-google-cloud-project-id.timecamp.users_custom_fields` cf
+  ON cf.resource_id = CAST(u.user_id AS INT64);
+```
