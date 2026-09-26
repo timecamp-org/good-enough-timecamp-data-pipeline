@@ -26,8 +26,9 @@ Run the export from the repository root:
 uv run --with-requirements requirements.txt --with 'dlt[bigquery]' \
    dlt_fetch_timecamp.py \
    --destination bigquery \
-   --from yesterday --to yesterday \
-   --datasets entries,tasks,users,computer_activities,application_names
+   --from 2026-01-01 --to 2026-12-31 \
+   --datasets entries,tasks,users \
+   --custom-fields
 ```
 
 Without `--format`, dlt chooses BigQuery's preferred JSONL format;
